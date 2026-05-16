@@ -1,0 +1,1497 @@
+/* ============================================================
+   Unntangle CRM — scoped styles
+   All selectors are namespaced under .crm-root so nothing leaks
+   into the marketing site (or vice-versa).
+   ============================================================ */
+
+.crm-root {
+  /* ----- tokens (light theme, black & white) ----- */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --text: #0a0a0a;
+  --text-dim: #525252;
+  --text-faint: #a3a3a3;
+  --accent: #0a0a0a;
+  --accent-hover: #262626;
+  --danger: #dc2626;
+  --warn: #b45309;
+  --info: #1d4ed8;
+  --success: #16a34a;
+
+  font-family: var(--crm-font), system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.crm-root * {
+  box-sizing: border-box;
+}
+
+/* ----- shell (sidebar + main) ----- */
+.crm-root .crm-shell {
+  display: flex;
+  min-height: 100vh;
+}
+.crm-root .crm-main {
+  flex: 1;
+  min-width: 0; /* allow tables/long URLs to shrink instead of overflow */
+}
+
+/* ----- sidebar ----- */
+.crm-root .crm-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  transition: width 0.2s ease;
+}
+/* Collapsed state — icons only, no labels. We hide rather than
+   remove DOM nodes so toggling back doesn't re-fetch components. */
+.crm-root .crm-sidebar.is-collapsed {
+  width: 64px;
+  padding: 20px 8px;
+}
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-link {
+  justify-content: center;
+  padding: 9px 8px;
+}
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-link span,
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-brand span:not(.crm-brand-dot),
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-user,
+.crm-root .crm-sidebar.is-collapsed .crm-logout span {
+  display: none;
+}
+/* In collapsed mode the brand logo + tagline would be clipped
+   by the narrow sidebar. Hide the whole stack — the toggle
+   button is enough of a brand-area presence at that width. */
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-logo,
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-brand-mark {
+  display: none;
+}
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-brand {
+  justify-content: center;
+  padding: 4px 0 20px;
+}
+.crm-root .crm-sidebar.is-collapsed .crm-logout {
+  justify-content: center;
+  padding: 8px 0;
+}
+/* The collapse-toggle button sits at the top-right of the sidebar
+   on expanded state, and centered on collapsed state. */
+.crm-root .crm-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.crm-root .crm-sidebar-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+  background: var(--bg);
+}
+.crm-root .crm-sidebar.is-collapsed .crm-sidebar-toggle {
+  margin: 0 auto;
+}
+.crm-root .crm-sidebar-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  padding: 4px 8px 20px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+/* Inner stack: logo on top, "by unntangle" tagline beneath.
+   Aligned to the right so the tagline tucks under the right
+   edge of the logo (the "W" in uFLOW), matching the requested
+   layout. The toggle button sits to the right of the stack. */
+.crm-root .crm-sidebar-brand-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+/* Logo sits in the brand row in place of the old text mark.
+   Width is capped so the toggle button still fits on the right
+   without wrapping. height: auto keeps the image's natural
+   aspect ratio. */
+.crm-root .crm-sidebar-logo {
+  height: 28px;
+  width: auto;
+  max-width: 140px;
+  object-fit: contain;
+  display: block;
+}
+/* Parent-brand tagline beneath the product logo. Small,
+   tracked, lowercase to read as a subtle attribution ("by
+   unntangle") without competing with the logo. */
+.crm-root .crm-sidebar-brand-tagline {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  line-height: 1;
+}
+/* "unntangle" itself takes the accent colour so the parent
+   brand name has a touch of weight against the muted "by". */
+.crm-root .crm-sidebar-brand-tagline-accent {
+  color: var(--accent);
+  font-weight: 700;
+}
+.crm-root .crm-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.crm-root .crm-sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  font-weight: 500;
+  transition: background 0.12s, color 0.12s;
+}
+.crm-root .crm-sidebar-link svg {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: color 0.12s;
+}
+.crm-root .crm-sidebar-link:hover svg,
+.crm-root .crm-sidebar-link.is-active svg {
+  color: var(--text);
+}
+.crm-root .crm-sidebar-link:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+.crm-root .crm-sidebar-link.is-active {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ----- sidebar groups ----- */
+/* Section label — small uppercase caption that introduces a
+   group of links (e.g. "Job Management", "User Management").
+   Not clickable, just visual. */
+.crm-root .crm-sidebar-group-label {
+  padding: 14px 12px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+/* First label sits closer to the top — the brand/section above
+   it already provides spacing. */
+.crm-root .crm-sidebar-nav > .crm-sidebar-group-label:first-child {
+  padding-top: 4px;
+}
+
+/* Expandable parent (e.g. "Jobs"). The chevron rotates when
+   open; the children render in a wrapper below this row. */
+.crm-root .crm-sidebar-link-parent .crm-sidebar-chevron {
+  margin-left: auto;
+  color: var(--text-faint);
+  transition: transform 0.15s, color 0.12s;
+}
+.crm-root .crm-sidebar-link-parent.is-open .crm-sidebar-chevron {
+  transform: rotate(90deg);
+  color: var(--text-dim);
+}
+
+/* Child links sit indented under their parent. Slightly smaller
+   icon, tighter padding to read as a sub-list. */
+.crm-root .crm-sidebar-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Subtle vertical line on the left so the hierarchy reads at a
+     glance even when nothing's hovered. */
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.crm-root .crm-sidebar-link-child {
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+.crm-root .crm-sidebar-link-child svg {
+  color: var(--text-faint);
+}
+.crm-root .crm-sidebar-foot {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.crm-root .crm-sidebar-user {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  line-height: 1.3;
+  padding: 0 8px;
+}
+.crm-root .crm-sidebar-user strong {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 13px;
+}
+.crm-root .crm-sidebar-user span {
+  color: var(--text-dim);
+}
+
+/* When the sidebar is used, the page no longer needs to be capped
+   to 1200px from the viewport edge — it lives inside .crm-main. */
+.crm-root .crm-shell .crm-page {
+  max-width: none;
+  margin: 0;
+}
+
+/* ----- sidebar section (used for the client switcher between
+   the brand header and the nav links) ----- */
+.crm-root .crm-sidebar-section {
+  padding: 0 0 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ----- client switcher (pill dropdown in the sidebar) ----- */
+.crm-root .crm-client-switcher {
+  position: relative;
+  width: 100%;
+}
+.crm-root .crm-client-switcher-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.crm-root .crm-client-switcher-trigger:hover {
+  border-color: var(--text-dim);
+}
+.crm-root .crm-client-switcher-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crm-root .crm-client-switcher-menu {
+  /* Popover below the trigger. Position absolute so it doesn't
+     push the nav links down, and z-index above siblings so the
+     options aren't clipped by the sidebar's `overflow-y: auto`. */
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.08);
+  padding: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.crm-root .crm-client-switcher-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.crm-root .crm-client-switcher-option:hover {
+  background: var(--surface-2);
+}
+.crm-root .crm-client-switcher-option.is-selected {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.crm-root .crm-client-switcher-option svg {
+  color: var(--text);
+  flex-shrink: 0;
+}
+.crm-root .crm-client-switcher-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 4px;
+}
+.crm-root .crm-client-switcher-status {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.crm-root .crm-client-switcher-status.is-error {
+  color: var(--danger);
+}
+
+/* ----- top nav (legacy, may still be used on some pages) ----- */
+.crm-root .crm-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 28px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.crm-root .crm-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.crm-root .crm-brand-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.crm-root .crm-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.crm-root .crm-nav-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+.crm-root .crm-nav-user strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.crm-root .crm-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.crm-root .crm-logout:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* ----- page shell ----- */
+.crm-root .crm-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+}
+.crm-root .crm-page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 28px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.crm-root .crm-page-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+.crm-root .crm-page-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ----- tabs ----- */
+.crm-root .crm-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.crm-root .crm-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.crm-root .crm-tab:hover {
+  color: var(--text);
+}
+.crm-root .crm-tab.is-active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.crm-root .crm-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.crm-root .crm-tab.is-active .crm-tab-count {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ----- buttons ----- */
+.crm-root .crm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.crm-root .crm-btn:hover {
+  background: var(--accent-hover);
+}
+.crm-root .crm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.crm-root .crm-btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+.crm-root .crm-btn-secondary:hover {
+  background: var(--border);
+}
+.crm-root .crm-btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+.crm-root .crm-btn-danger:hover {
+  background: #dc2626;
+}
+
+/* ----- inline link (plain underlined text — used where a full
+   button would be too visually heavy, e.g. "View ref" inside a
+   data row) ----- */
+.crm-root .crm-link {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.crm-root .crm-link:hover {
+  color: var(--text-dim);
+}
+
+/* ----- table ----- */
+.crm-root .crm-table {
+  width: 100%;
+  /* Fixed layout makes every column share the available width
+     evenly by default. Individual columns can still override via
+     an inline `style={{ width: ... }}` on the matching <th>. */
+  table-layout: fixed;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.crm-root .crm-table th,
+.crm-root .crm-table td {
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  /* With table-layout: fixed, long content (like project slugs or
+     artist emails) would otherwise overflow the cell. Wrap by
+     default; break long unbroken strings as a last resort. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* Action-column buttons are visually heavy (filled, large radius).
+   Slim them down inside table cells so rows don't grow tall. */
+.crm-root .crm-table td .crm-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.crm-root .crm-table th {
+  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.crm-root .crm-table tr:last-child td {
+  border-bottom: none;
+}
+.crm-root .crm-table tr:hover td {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ----- status badges ----- */
+.crm-root .crm-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid;
+}
+.crm-root .crm-badge-draft {
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.crm-root .crm-badge-pending {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.crm-root .crm-badge-rejected {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.crm-root .crm-badge-wip {
+  /* Amber. Distinct from --warn (used by QA Pending) by being
+     denser/saturated so the two never read the same. */
+  color: #92400e;
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(251, 191, 36, 0.18);
+}
+.crm-root .crm-badge-approved {
+  /* Green to read as a positive/done state. Uses the --success
+     token (matches the green Approve modal). */
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+/* Two-stage approval: between admin sign-off and final client
+   sign-off the project sits in 'client_review'. Blue so it reads
+   as informational/in-flight, distinct from amber (QA Pending,
+   WIP) and green (final Approved). */
+.crm-root .crm-badge-client-review {
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 35%, transparent);
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+}
+
+/* ----- cards ----- */
+.crm-root .crm-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+/* ----- form fields ----- */
+.crm-root .crm-input,
+.crm-root .crm-textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+.crm-root .crm-input:focus,
+.crm-root .crm-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.crm-root .crm-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ----- login page (legacy single-card layout — superseded by
+   .crm-login-split below, kept here in case anything still
+   references these class names) ----- */
+.crm-root .crm-login-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.crm-root .crm-login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+}
+.crm-root .crm-login-card h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.crm-root .crm-login-card p {
+  margin: 0 0 24px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.crm-root .crm-form-group {
+  margin-bottom: 16px;
+}
+.crm-root .crm-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+/* ============================================================
+   Login — single centered card (current layout)
+   ============================================================
+   Full-viewport centered wrapper that hosts the same form
+   internals as the split layout did. The .crm-login-form-inner
+   block (logo + title + form + foot link) is reused as-is so
+   future toggles between centered and split-screen layouts
+   only touch the outer wrapper.
+   ============================================================ */
+
+.crm-root .crm-login-center {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 48px 24px;
+  background: var(--bg);
+}
+
+/* ============================================================
+   Login — split-screen layout (legacy, kept for future reuse)
+   ============================================================
+   Two equal-height panes side-by-side. The form pane is on the
+   left (preferred reading order, immediate focus on the action);
+   the brand pane on the right carries the marketing weight. The
+   right pane is hidden on narrow viewports so the form stays
+   readable on phones.
+   ============================================================ */
+
+.crm-root .crm-login-split {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 1.15fr;
+  background: var(--bg);
+}
+
+@media (max-width: 960px) {
+  .crm-root .crm-login-split {
+    grid-template-columns: 1fr;
+  }
+  .crm-root .crm-login-pane-brand {
+    display: none;
+  }
+}
+
+/* ----- shared pane ----- */
+.crm-root .crm-login-pane {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 56px;
+  min-height: 100vh;
+}
+
+@media (max-width: 600px) {
+  .crm-root .crm-login-pane {
+    padding: 32px 24px;
+  }
+}
+
+/* ----- LEFT pane: sign-in card ----- */
+.crm-root .crm-login-pane-form {
+  background: var(--surface);
+}
+.crm-root .crm-login-form-inner {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Brand mark above the form. Logo + tiny attribution tagline
+   ("by unntangle"), matching the sidebar's brand block so the
+   identity stays consistent across surfaces. The whole stack
+   is centered on its own axis so the tagline reads as sitting
+   directly under the logo rather than off to one side. */
+.crm-root .crm-login-brand {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 28px;
+  align-self: center;
+}
+.crm-root .crm-login-brand-logo {
+  height: 36px;
+  width: auto;
+  max-width: 160px;
+  object-fit: contain;
+  display: block;
+}
+.crm-root .crm-login-brand-tagline {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.crm-root .crm-login-brand-tagline-accent {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.crm-root .crm-login-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  line-height: 1.15;
+  text-align: center;
+}
+.crm-root .crm-login-sub {
+  margin: 6px 0 28px;
+  color: var(--text-dim);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ----- form fields (login-scoped, so the rest of the CRM keeps
+   its plainer .crm-input / .crm-form-group styles) ----- */
+.crm-root .crm-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.crm-root .crm-login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crm-root .crm-login-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Input wrapper hosts both the leading icon and the trailing
+   reveal toggle. The input fills the remaining space and gets
+   left/right padding so its text doesn't sit under the icons. */
+.crm-root .crm-login-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.crm-root .crm-login-input-wrap:focus-within {
+  border-color: var(--accent);
+  background: var(--surface);
+  /* Subtle focus ring — thin halo, low opacity. */
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.08);
+}
+.crm-root .crm-login-input-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.crm-root .crm-login-input-wrap:focus-within .crm-login-input-icon {
+  color: var(--text-dim);
+}
+.crm-root .crm-login-input {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 12px 14px 12px 40px;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+.crm-root .crm-login-input::placeholder {
+  color: var(--text-faint);
+}
+/* Password fields reserve room on the right for the eye toggle. */
+.crm-root .crm-login-input-wrap:has(.crm-login-input-toggle)
+  .crm-login-input {
+  padding-right: 44px;
+}
+.crm-root .crm-login-input-toggle {
+  position: absolute;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.crm-root .crm-login-input-toggle:hover {
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* ----- Remember me + Forgot password row ----- */
+.crm-root .crm-login-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+}
+.crm-root .crm-login-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.crm-root .crm-login-check input[type='checkbox'] {
+  /* Native checkbox styled minimally — keeps native a11y
+     semantics and form submission behaviour. */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: background 0.12s, border-color 0.12s;
+}
+.crm-root .crm-login-check input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.crm-root .crm-login-check input[type='checkbox']:checked::after {
+  content: '';
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+.crm-root .crm-login-forgot {
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.12s;
+}
+.crm-root .crm-login-forgot:hover {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ----- error pill ----- */
+.crm-root .crm-login-error {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
+  color: var(--danger);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-top: -2px;
+}
+
+/* ----- submit ----- */
+.crm-root .crm-login-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 13px 16px;
+  margin-top: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.06s;
+}
+.crm-root .crm-login-submit:hover {
+  background: var(--accent-hover);
+}
+.crm-root .crm-login-submit:active {
+  transform: translateY(1px);
+}
+.crm-root .crm-login-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ----- foot link beneath the form ----- */
+.crm-root .crm-login-foot {
+  margin: 24px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: center;
+}
+.crm-root .crm-login-foot a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.crm-root .crm-login-foot a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ----- RIGHT pane: brand / marketing panel -----
+   Deep ink background with a soft radial highlight in the top-right
+   so the surface has motion without being noisy. A massive
+   semi-transparent wordmark sits behind the content as a watermark. */
+.crm-root .crm-login-pane-brand {
+  background:
+    radial-gradient(
+      ellipse at top right,
+      rgba(56, 189, 248, 0.18),
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse at bottom left,
+      rgba(99, 102, 241, 0.14),
+      transparent 60%
+    ),
+    linear-gradient(180deg, #0b1220 0%, #060912 100%);
+  color: #f8fafc;
+  overflow: hidden;
+}
+
+/* Decorative wordmark. Huge, low-opacity, italic-ish via heavy
+   letter-spacing, rotated slightly so it reads as artwork rather
+   than a label. Positioned absolutely so the foreground content
+   sits on top of it. */
+.crm-root .crm-login-watermark {
+  position: absolute;
+  top: 50%;
+  right: -8%;
+  transform: translateY(-50%);
+  font-size: clamp(180px, 26vw, 360px);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: rgba(255, 255, 255, 0.04);
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.crm-root .crm-login-brand-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 520px;
+  width: 100%;
+}
+.crm-root .crm-login-brand-header {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.crm-root .crm-login-brand-heading {
+  margin: 0;
+  font-size: clamp(28px, 3.4vw, 42px);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: #fff;
+}
+.crm-root .crm-login-brand-accent {
+  background: linear-gradient(90deg, #38bdf8, #818cf8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.crm-root .crm-login-brand-lead {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: rgba(248, 250, 252, 0.72);
+  max-width: 460px;
+}
+
+/* Stat strip — a single inline metric with a coloured numeral. */
+.crm-root .crm-login-brand-stat {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  width: fit-content;
+  backdrop-filter: blur(8px);
+}
+.crm-root .crm-login-brand-stat-num {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, #38bdf8, #818cf8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  line-height: 1;
+}
+.crm-root .crm-login-brand-stat-label {
+  font-size: 13px;
+  color: rgba(248, 250, 252, 0.78);
+  line-height: 1.4;
+  max-width: 280px;
+}
+
+/* ----- testimonial / quote card ----- */
+.crm-root .crm-login-brand-quote {
+  margin: 0;
+  padding: 22px 24px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 16px;
+  backdrop-filter: blur(8px);
+  /* Push the quote toward the bottom of the available space
+     when the content column is taller than the headline + stat,
+     so the layout reads as "hero up top, social proof at the
+     bottom" — similar to uVOiZ. */
+  margin-top: auto;
+}
+.crm-root .crm-login-brand-quote-text {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: rgba(248, 250, 252, 0.92);
+  font-style: normal;
+}
+.crm-root .crm-login-brand-quote-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: rgba(248, 250, 252, 0.7);
+}
+.crm-root .crm-login-brand-quote-meta strong {
+  display: block;
+  color: #fff;
+  font-weight: 600;
+}
+.crm-root .crm-login-brand-quote-role {
+  display: block;
+  font-size: 12px;
+  color: rgba(248, 250, 252, 0.55);
+  margin-top: 1px;
+}
+.crm-root .crm-login-brand-quote-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #38bdf8, #818cf8);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+/* ----- upload widget ----- */
+.crm-root .crm-dropzone {
+  border: 2px dashed var(--border-strong);
+  border-radius: 12px;
+  padding: 28px;
+  text-align: center;
+  background: var(--surface);
+  transition: border-color 0.15s, background 0.15s;
+  cursor: pointer;
+}
+.crm-root .crm-dropzone:hover,
+.crm-root .crm-dropzone.is-drag {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.crm-root .crm-dropzone-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+/* ----- modal ----- */
+.crm-root .crm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.crm-root .crm-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 28px;
+}
+.crm-root .crm-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.crm-root .crm-modal-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.crm-root .crm-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+/* ----- model viewer ----- */
+.crm-root .crm-model-viewer {
+  width: 100%;
+  height: 380px;
+  background: linear-gradient(180deg, #fafafa, #ededed);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: block;
+}
+
+/* ----- QA review page ----- */
+/* Two-column layout: references on the left, GLB viewer on the
+   right. Both columns are equal width so the viewer has as much
+   room as the references gallery. */
+.crm-root .crm-qa-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .crm-root .crm-qa-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.crm-root .crm-qa-refs {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.crm-root .crm-qa-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 12px;
+}
+/* Tighter grid on QA refs since the column itself is wider now. */
+.crm-root .crm-qa-ref-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+@media (max-width: 700px) {
+  .crm-root .crm-qa-ref-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ----- lightbox overlay (clicking a thumbnail) -----
+   Full-viewport dim layer with a centred image. Same z-index as
+   the modal backdrop so it sits above QA UI without interfering
+   with toast/error placement. */
+.crm-root .crm-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  cursor: zoom-out;
+}
+.crm-root .crm-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* Slight shadow so the image edge reads even on a near-black bg. */
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+.crm-root .crm-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.crm-root .crm-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+/* Arrows to flip between images without closing the lightbox. */
+.crm-root .crm-lightbox-arrow {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+.crm-root .crm-lightbox-arrow:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+.crm-root .crm-lightbox-arrow.is-prev { left: 16px; }
+.crm-root .crm-lightbox-arrow.is-next { right: 16px; }
+.crm-root .crm-qa-ref-thumb {
+  display: block;
+  aspect-ratio: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.12s;
+}
+.crm-root .crm-qa-ref-thumb:hover {
+  border-color: var(--accent);
+}
+.crm-root .crm-qa-ref-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.crm-root .crm-qa-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ----- feedback image grid ----- */
+.crm-root .crm-feedback-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.crm-root .crm-feedback-thumb {
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.crm-root .crm-feedback-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.crm-root .crm-feedback-thumb button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.crm-root .crm-empty {
+  /* Use flexbox so children center horizontally as blocks. The old
+     text-align approach only centered inline content — once we
+     added max-width to children, they became narrower blocks that
+     float to the left edge unless explicitly centered. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--text-dim);
+}
+.crm-root .crm-empty h3 {
+  color: var(--text);
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+/* Constrain copy width so a wide viewport doesn't stretch the text
+   sideways. align-items on the parent handles the centering now. */
+.crm-root .crm-empty p {
+  max-width: 420px;
+  margin: 0;
+}
