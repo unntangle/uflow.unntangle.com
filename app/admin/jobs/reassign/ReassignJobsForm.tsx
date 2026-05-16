@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
+import { ProjectStatus } from '../../../lib/supabase';
 
 // ============================================================
 // Types
@@ -13,7 +14,7 @@ type Project = {
   id: string;
   slug: string;
   name: string;
-  status: 'draft' | 'qa_pending' | 'rejected' | 'wip' | 'approved';
+  status: ProjectStatus;
   revision_count: number;
   assigned_to: string | null;
   updated_at: string;
@@ -107,7 +108,7 @@ export default function ReassignJobsForm({
     // WIP reassignments go through the confirmation modal because
     // the assigned artist has actively engaged with the work; we
     // want the admin to consciously decide to take it away.
-    if (p.status === 'wip') {
+    if (p.status === 'wip' || p.status === 'iqa_wip' || p.status === 'eqa_wip') {
       setConfirming({ project: p, targetArtistId: target });
       return;
     }
@@ -124,7 +125,7 @@ export default function ReassignJobsForm({
             <div>
               <h1 className="crm-page-title">Reassign Jobs</h1>
               <p className="crm-page-sub">
-                Move open jobs (draft, rejected &amp; WIP) between artists.
+                Move open jobs (draft, rejected revisions &amp; WIP) between artists.
                 Changes save per row.
               </p>
             </div>
@@ -183,7 +184,7 @@ export default function ReassignJobsForm({
                           status={p.status}
                           revisionCount={p.revision_count}
                         />
-                        {p.status === 'wip' && (
+                        { (p.status === 'wip' || p.status === 'iqa_wip' || p.status === 'eqa_wip') && (
                           // Inline note next to the badge to flag that
                           // this artist has actively started — reassigning
                           // will pop a confirmation before committing.

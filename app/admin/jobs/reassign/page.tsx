@@ -50,7 +50,14 @@ export default async function ReassignJobsPage() {
       .select(
         'id, slug, name, status, revision_count, assigned_to, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
       )
-      .in('status', ['draft', 'rejected', 'wip'])
+      .in('status', [
+        'draft',
+        'iqa_rejected',
+        'eqa_rejected',
+        'wip',
+        'iqa_wip',
+        'eqa_wip',
+      ])
       .order('updated_at', { ascending: false }),
     supabase()
       .from('uflow_users')
