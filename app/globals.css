@@ -565,7 +565,34 @@
   color: #fff;
 }
 .crm-root .crm-btn-danger:hover {
-  background: #dc2626;
+  background: #b91c1c;
+}
+
+/* ----- ghost (subtle, backgroundless until hover) ----- */
+.crm-root .crm-btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+}
+.crm-root .crm-btn-ghost:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.crm-root .crm-btn-ghost-danger {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+}
+.crm-root .crm-btn-ghost-danger:hover {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+/* Icon+label button — compact variant for table action columns */
+.crm-root .crm-btn-icon {
+  padding: 5px 10px;
+  font-size: 12px;
+  gap: 5px;
 }
 
 /* ----- inline link (plain underlined text — used where a full

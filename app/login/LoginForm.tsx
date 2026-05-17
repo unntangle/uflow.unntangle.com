@@ -100,9 +100,9 @@ export default function LoginForm() {
             aria-label={showPassword ? 'Hide password' : 'Show password'}
           >
             {showPassword ? (
-              <EyeOff size={16} strokeWidth={1.75} aria-hidden="true" />
-            ) : (
               <Eye size={16} strokeWidth={1.75} aria-hidden="true" />
+            ) : (
+              <EyeOff size={16} strokeWidth={1.75} aria-hidden="true" />
             )}
           </button>
         </div>

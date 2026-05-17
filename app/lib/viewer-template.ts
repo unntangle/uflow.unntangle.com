@@ -69,13 +69,22 @@ export function renderViewerHtml(opts: {
       overflow: hidden;
       height: 100vh;
       width: 100vw;
+      /* Custom high-visibility black pointer with white outline */
+      cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJibGFjayIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiPjxwYXRoIGQ9Ik00LjUgM3YxNS4yNWw0LjUtNC41IDIuNzUgNS41IDIuNS0xLjI1LTIuNzUtNS41IDUuMjUuMjVMNC41IDN6Ii8+PC9zdmc+'), default !important;
     }
     model-viewer {
       width: 100vw;
       height: 100vh;
-      background: #ffffff;
-      --poster-color: #ffffff;
+      background: radial-gradient(circle at center, #ffffff 0%, #e8e8ec 100%);
+      --poster-color: transparent;
       outline: none;
+      /* Custom high-visibility black pointer with white outline */
+      cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJibGFjayIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiPjxwYXRoIGQ9Ik00LjUgM3YxNS4yNWw0LjUtNC41IDIuNzUgNS41IDIuNS0xLjI1LTIuNzUtNS41IDUuMjUuMjVMNC41IDN6Ii8+PC9zdmc+'), default !important;
+    }
+    
+    /* Apply custom high-visibility black arrow pointer to all buttons, links and interactive items */
+    a, button, [role="button"], .menu-btn, .ctrl-btn, .sidebar-close {
+      cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJibGFjayIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiPjxwYXRoIGQ9Ik00LjUgM3YxNS4yNWw0LjUtNC41IDIuNzUgNS41IDIuNS0xLjI1LTIuNzUtNS41IDUuMjUuMjVMNC41IDN6Ii8+PC9zdmc+'), default !important;
     }
 
     .loading-overlay {
@@ -311,8 +320,6 @@ export function renderViewerHtml(opts: {
   <model-viewer id="viewer"
     src="/${slug}/${glbFilename}"
     alt="${safeName} 3D Model"
-    auto-rotate auto-rotate-delay="0"
-    rotation-per-second="30deg"
     camera-controls touch-action="pan-y"
     interaction-prompt="none"
     shadow-intensity="1" shadow-softness="1"
@@ -331,7 +338,7 @@ export function renderViewerHtml(opts: {
   </model-viewer>
 
   <div class="controls">
-    <button class="ctrl-btn active" id="btnRotate" aria-label="Auto rotate">
+    <button class="ctrl-btn" id="btnRotate" aria-label="Auto rotate">
       <span class="tip">Auto Rotate</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
@@ -386,6 +393,27 @@ export function renderViewerHtml(opts: {
     const loaderText = document.getElementById('loaderText');
     const loadingOverlay = document.getElementById('loadingOverlay');
 
+    // Inject high-visibility custom cursors inside the model-viewer shadow DOM
+    // to bypass the internal canvas styling of the Web Component.
+    function injectShadowStyle() {
+      if (viewer && viewer.shadowRoot) {
+        if (viewer.shadowRoot.querySelector('#high-vis-cursor-style')) return;
+        const shadowStyle = document.createElement('style');
+        shadowStyle.id = 'high-vis-cursor-style';
+        shadowStyle.textContent = "* { cursor: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJibGFjayIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiPjxwYXRoIGQ9Ik00LjUgM3YxNS4yNWw0LjUtNC41IDIuNzUgNS41IDIuNS0xLjI1LTIuNzUtNS41IDUuMjUuMjVMNC41IDN6Ii8+PC9zdmc+'), default !important; }";
+        viewer.shadowRoot.appendChild(shadowStyle);
+      }
+    }
+    injectShadowStyle();
+    viewer.addEventListener('load', injectShadowStyle);
+    let attempts = 0;
+    const interval = setInterval(() => {
+      injectShadowStyle();
+      if (++attempts > 10 || (viewer && viewer.shadowRoot && viewer.shadowRoot.querySelector('#high-vis-cursor-style'))) {
+        clearInterval(interval);
+      }
+    }, 100);
+
     viewer.addEventListener('progress', (e) => {
       const pct = Math.round(e.detail.totalProgress * 100);
       progressBar.style.width = pct + '%';
@@ -398,7 +426,7 @@ export function renderViewerHtml(opts: {
     });
 
     const btnRotate = document.getElementById('btnRotate');
-    let rotating = true;
+    let rotating = false;
     btnRotate.addEventListener('click', () => {
       rotating = !rotating;
       rotating ? viewer.setAttribute('auto-rotate', '') : viewer.removeAttribute('auto-rotate');

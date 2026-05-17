@@ -21,8 +21,11 @@
 // ============================================================
 
 import fs from 'node:fs/promises';
+import dotenv from 'dotenv';
 import path from 'node:path';
-import 'dotenv/config';
+// Load environment variables from .env.local (Next.js default) and fall back to .env
+dotenv.config({ path: path.join(process.cwd(), '.env.local') });
+dotenv.config({ path: path.join(process.cwd(), '.env') });
 
 // Resolve relative to project root so the script works no matter
 // where it's invoked from.

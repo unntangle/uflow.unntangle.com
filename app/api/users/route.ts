@@ -148,3 +148,102 @@ export async function POST(req: NextRequest) {
   }
   return NextResponse.json({ user: data });
 }
+
+// ============================================================
+// PATCH /api/users
+// Body: { id, name?, email?, password? }
+// Admin-only. Updates name, email, and/or password for any user.
+// ============================================================
+export async function PATCH(req: NextRequest) {
+  const auth = await requireApiUser('admin');
+  if (auth instanceof NextResponse) return auth;
+
+  let body: { id?: string; name?: string; email?: string; password?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  const { id, name, email, password } = body;
+  if (!id) {
+    return NextResponse.json({ error: 'id is required.' }, { status: 400 });
+  }
+
+  // Build up only the fields that were provided.
+  const updates: Record<string, string> = {};
+  if (name?.trim()) updates.name = name.trim();
+  if (email?.trim()) {
+    const e = email.toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+      return NextResponse.json({ error: 'Invalid email format.' }, { status: 400 });
+    }
+    updates.email = e;
+  }
+  if (password) {
+    if (password.length < 8) {
+      return NextResponse.json(
+        { error: 'Password must be at least 8 characters.' },
+        { status: 400 }
+      );
+    }
+    updates.password_hash = await bcrypt.hash(password, 10);
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
+  }
+
+  const { data, error } = await supabase()
+    .from('uflow_users')
+    .update(updates)
+    .eq('id', id)
+    .select('id, email, name, role, created_at')
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json(
+        { error: 'Email already in use by another account.' },
+        { status: 409 }
+      );
+    }
+    console.error('[users.update]', error);
+    return NextResponse.json({ error: 'DB error' }, { status: 500 });
+  }
+  return NextResponse.json({ user: data });
+}
+
+// ============================================================
+// DELETE /api/users
+// Body: { id }
+// Admin-only. Permanently removes the user. Their assigned
+// projects will have assigned_to set to NULL by the DB FK.
+// ============================================================
+export async function DELETE(req: NextRequest) {
+  const auth = await requireApiUser('admin');
+  if (auth instanceof NextResponse) return auth;
+
+  let body: { id?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  const { id } = body;
+  if (!id) {
+    return NextResponse.json({ error: 'id is required.' }, { status: 400 });
+  }
+
+  const { error } = await supabase()
+    .from('uflow_users')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    console.error('[users.delete]', error);
+    return NextResponse.json({ error: 'DB error' }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true });
+}

@@ -39,42 +39,17 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       // ----------------------------------------------------------
-      // (A) Subdomain routing for the public viewer (production).
-      // Maps officemate.unntangle.com/<slug>/ → /officemate/<slug>/
-      // so the customer-facing URL doesn't need to include the
-      // /officemate/ prefix that's used internally on disk.
-      // The host guard scopes this so the main domain (where the
-      // CRM app lives) is unaffected.
+      // Clean URLs for the viewer pages — local dev fallback.
+      // If the user visits localhost:3000/officemate/jupiter
+      // directly (without the subdomain), this appends index.html.
+      // Subdomain routing is now handled by middleware.ts
       // ----------------------------------------------------------
       {
-        source: '/:path*',
-        destination: '/officemate/:path*',
-        has: [
-          {
-            type: 'host',
-            value: 'officemate.unntangle.com',
-          },
-        ],
-      },
-
-      // ----------------------------------------------------------
-      // (B) Clean URLs for the viewer pages — local dev + prod.
-      // Next's static file handler doesn't auto-resolve a path
-      // like /officemate/jupiter to /officemate/jupiter/index.html
-      // (no implicit directory index). Without these rewrites you
-      // get a 404 unless the user types the trailing slash AND
-      // /index.html. We rewrite both shapes so the URL stays
-      // friendly. The (.*\\..+) negative-style hint isn't needed
-      // — the rewrite target only matches when index.html exists,
-      // so /officemate/<slug>/<file>.glb still serves the GLB
-      // directly (the static handler wins for actual files).
-      // ----------------------------------------------------------
-      {
-        source: '/officemate/:slug',
+        source: '/officemate/:slug([^.]+)',
         destination: '/officemate/:slug/index.html',
       },
       {
-        source: '/officemate/:slug/',
+        source: '/officemate/:slug([^.]+)/',
         destination: '/officemate/:slug/index.html',
       },
     ];
