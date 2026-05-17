@@ -17,6 +17,7 @@ import {
   Inbox,
   ChevronRight,
   CheckCircle2,
+  UserCircle,
 } from 'lucide-react';
 import { crmFetch, crmPath } from '../lib/client-fetch';
 import ClientSwitcher, {
@@ -135,6 +136,23 @@ export default function Sidebar({
   const isOnClientApproved = path === '/client' && tabParam === 'approved';
   const isOnClientOverview =
     path === '/client' && !isOnClientQa && !isOnClientAllocated && !isOnClientApproved;
+
+  // ---- Artist virtual routes. Same pattern as admin/client so
+  // the artist sidebar can highlight which tab is active without
+  // a real route change. The artist dashboard at /artist drives
+  // the visible view from `?tab=`:
+  //   /artist                 → My Jobs (the active queue, default)
+  //   /artist?tab=overview    → Overview (stats snapshot)
+  //   /artist?tab=jobs        → Jobs (tabbed view, admin-style)
+  //   /artist?tab=completed   → Completed (approved history; kept
+  //                             for back-compat with earlier links,
+  //                             same content lives inside Jobs)
+  // /artist/profile is a real page (own folder + page.tsx).
+  const isOnArtistOverview = path === '/artist' && tabParam === 'overview';
+  const isOnArtistJobs = path === '/artist' && tabParam === 'jobs';
+  const isOnArtistMyJobs =
+    path === '/artist' && !isOnArtistOverview && !isOnArtistJobs;
+  const isOnArtistProfile = isActive('/artist/profile');
 
   // ---- Client's Jobs expandable parent: same pattern as admin's.
   // Children are Create Job (/client/new), Allocated Jobs
@@ -415,14 +433,58 @@ export default function Sidebar({
           </>
         )}
         {role === '3d_artist' && (
-          <button
-            className={`crm-sidebar-link ${isActive('/artist') ? 'is-active' : ''}`}
-            onClick={() => router.push(crmPath('/artist'))}
-            title={collapsed ? 'My Jobs' : undefined}
-          >
-            <Briefcase size={16} strokeWidth={1.75} aria-hidden="true" />
-            <span>My Jobs</span>
-          </button>
+          <>
+            {/* ============ JOB MANAGEMENT (artist) ============ */}
+            {/* Three flat menus — no expandable groups. Jobs is a
+                single page that uses the tabbed admin-style bar
+                (YTS / WIP / IQA / IQA Rejected / Open / Approved)
+                internally, so all the per-stage slices that used
+                to be sub-menus live as tabs on one page now. */}
+            {!collapsed && (
+              <div className="crm-sidebar-group-label">Job Management</div>
+            )}
+            <button
+              className={`crm-sidebar-link ${isOnArtistOverview ? 'is-active' : ''}`}
+              onClick={() => router.push(crmPath('/artist?tab=overview'))}
+              title={collapsed ? 'Overview' : undefined}
+            >
+              <LayoutDashboard size={16} strokeWidth={1.75} aria-hidden="true" />
+              <span>Overview</span>
+            </button>
+            <button
+              className={`crm-sidebar-link ${isOnArtistMyJobs ? 'is-active' : ''}`}
+              onClick={() => router.push(crmPath('/artist'))}
+              title={collapsed ? 'My Jobs' : undefined}
+            >
+              <Briefcase size={16} strokeWidth={1.75} aria-hidden="true" />
+              <span>My Jobs</span>
+            </button>
+            <button
+              className={`crm-sidebar-link ${isOnArtistJobs ? 'is-active' : ''}`}
+              onClick={() => router.push(crmPath('/artist?tab=jobs'))}
+              title={collapsed ? 'Jobs' : undefined}
+            >
+              <Folder size={16} strokeWidth={1.75} aria-hidden="true" />
+              <span>Jobs</span>
+            </button>
+
+            {/* ============ ACCOUNT ============ */}
+            {/* Self-service profile. Distinct group so it doesn't
+                read as "a job called Profile" — it's about the
+                artist, not their work. Sits below Job Management
+                like User Management does for admin. */}
+            {!collapsed && (
+              <div className="crm-sidebar-group-label">Account</div>
+            )}
+            <button
+              className={`crm-sidebar-link ${isOnArtistProfile ? 'is-active' : ''}`}
+              onClick={() => router.push(crmPath('/artist/profile'))}
+              title={collapsed ? 'Profile' : undefined}
+            >
+              <UserCircle size={16} strokeWidth={1.75} aria-hidden="true" />
+              <span>Profile</span>
+            </button>
+          </>
         )}
         {role === 'client' && (
           <>

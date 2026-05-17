@@ -7,8 +7,18 @@ import Sidebar from '../../components/Sidebar';
 import { crmFetch } from '../../lib/client-fetch';
 
 // ============================================================
-// Types
+// Types & Utilities
 // ============================================================
+
+const ADJECTIVES = ['Neon', 'Cosmic', 'Solar', 'Lunar', 'Velvet', 'Crimson', 'Azure', 'Golden', 'Silver', 'Crystal', 'Magic', 'Epic', 'Bold', 'Bright', 'Rapid', 'Silent', 'Mighty', 'Brave', 'Clever', 'Swift'];
+const NOUNS = ['Tiger', 'Dragon', 'Phoenix', 'Eagle', 'Wolf', 'Bear', 'Lion', 'Hawk', 'Falcon', 'Panther', 'Rocket', 'Comet', 'Planet', 'Star', 'Galaxy', 'River', 'Mountain', 'Ocean', 'Forest', 'Storm'];
+
+function generateReadablePassword() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const num = Math.floor(10 + Math.random() * 90); // 2 digits
+  return `${adj}${noun}${num}!`;
+}
 type ClientUser = {
   id: string;
   email: string;
@@ -402,7 +412,19 @@ export default function ClientsPage({
                 </div>
 
                 <div className="crm-form-group">
-                  <label className="crm-label">Temporary password</label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <label className="crm-label" style={{ margin: 0 }}>Temporary password</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPassword(generateReadablePassword());
+                      }}
+                      className="crm-btn-ghost"
+                      style={{ fontSize: 11, padding: '2px 6px', height: 'auto', minHeight: 'auto', color: 'var(--text-dim)' }}
+                    >
+                      Auto-generate
+                    </button>
+                  </div>
                   <input
                     className="crm-input"
                     type="text"
