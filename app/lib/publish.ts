@@ -32,6 +32,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fetchFromUrl } from './r2';
+import { supabase } from './supabase';
 
 // Resolve the public folder relative to the Next.js project root.
 // process.cwd() is the project root when next dev / next start
@@ -132,7 +133,22 @@ export async function publishGlbToPublicFolder(opts: {
   const html = renderViewerHtml({ slug, projectName, glbFilename });
   await fs.writeFile(path.join(projectDir, 'index.html'), html, 'utf8');
 
-  // 6) Compose the URLs the caller will store in the DB. The
+  // 6) Refresh the cross-project manifest. Every viewer page's
+  //    sidebar reads this file at runtime to populate the
+  //    "Other models" list, so re-writing it on every publish
+  //    means newly-approved projects appear in the sidebar of
+  //    pre-existing pages on the next refresh — no need to
+  //    rebuild any HTML. We do this after the HTML write so a
+  //    manifest error doesn't strand a half-written viewer.
+  try {
+    await writeManifest();
+  } catch (err) {
+    // Manifest failure is non-fatal: the viewer page still loads
+    // and just shows an empty sidebar. Log and continue.
+    console.warn('[publish] could not write manifest:', err);
+  }
+
+  // 7) Compose the URLs the caller will store in the DB. The
   //    OFFICEMATE_PUBLIC_BASE env var is the front-of-site
   //    origin \u2014 typically https://officemate.unntangle.com in
   //    production and http://localhost:3000/officemate during
@@ -151,4 +167,68 @@ export async function publishGlbToPublicFolder(opts: {
     publicViewerUrl: `${base}/${slug}/`,
     publicGlbUrl: `${base}/${slug}/${glbFilename}`,
   };
+}
+
+// ============================================================
+// Manifest of all published models
+// ============================================================
+// Every viewer page's sidebar fetches /manifest.json at runtime
+// and renders the list, so the sidebar of every page stays in
+// sync with the latest publish state — no need to rebuild HTML
+// for every existing page when a new model is approved.
+//
+// Shape (kept simple so the viewer's vanilla JS can render it
+// without any framework or build step):
+//
+//   {
+//     "generated_at": "2026-05-16T20:30:00.000Z",
+//     "models": [
+//       { "slug": "jupiter",  "name": "Jupiter",  "approved_at": "2026-05-15T…" },
+//       { "slug": "jupiter2", "name": "Jupiter2", "approved_at": "2026-05-16T…" }
+//     ]
+//   }
+//
+// Models are listed in approval order (newest first) so the
+// sidebar surfaces what's just shipped.
+// ============================================================
+
+type ManifestModel = {
+  slug: string;
+  name: string;
+  approved_at: string | null;
+};
+
+async function writeManifest(): Promise<void> {
+  // Pull every approved project from the DB. We include only the
+  // fields the sidebar needs — don't leak revision counts, brief
+  // text, or other internal data into a public manifest.
+  const { data, error } = await supabase()
+    .from('uflow_projects')
+    .select('slug, name, updated_at')
+    .eq('status', 'approved')
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Supabase query failed: ${error.message}`);
+  }
+
+  const models: ManifestModel[] = (data ?? []).map((row) => ({
+    slug: row.slug as string,
+    name: row.name as string,
+    // updated_at on an approved row is the approval timestamp
+    // since the approve handler stamps it during the transition.
+    approved_at: (row.updated_at as string) ?? null,
+  }));
+
+  const manifest = {
+    generated_at: new Date().toISOString(),
+    models,
+  };
+
+  const manifestPath = path.join(PUBLIC_OFFICEMATE_DIR, 'manifest.json');
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify(manifest, null, 2),
+    'utf8'
+  );
 }

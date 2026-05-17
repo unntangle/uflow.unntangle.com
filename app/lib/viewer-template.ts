@@ -17,6 +17,13 @@
 //   - the logo path stays at /officemate/<slug>/officemate-logo.webp
 //     so each published folder is self-contained (the publish
 //     step copies the logo in alongside the GLB)
+//   - a left-side drawer is rendered that fetches the
+//     cross-project manifest at runtime and lists every other
+//     published model so the visitor can switch between them
+//     without going back to a dashboard. The current page is
+//     highlighted. The drawer is filled in client-side so adding
+//     a new published model causes every existing viewer page
+//     to show the new entry on next refresh, with no rebuild.
 //
 // Keeping a single source of truth for the page means future
 // styling updates only touch this file, not every published
@@ -94,12 +101,122 @@ export function renderViewerHtml(opts: {
     .loader-text { margin-top: 14px; font-size: 12px; color: #999; letter-spacing: 0.3px; }
 
     .logo {
-      position: fixed; top: 4px; left: 24px;
+      position: fixed; top: 4px; left: 96px;
       z-index: 20;
       height: 72px; width: auto;
       pointer-events: none;
     }
 
+    /* ───── Sidebar toggle ───── */
+    /* Lives at top-left where the logo used to be. The logo is
+       nudged right so they don't overlap. The toggle stays
+       visible at all times so the visitor can re-open the
+       drawer after closing it. */
+    .menu-btn {
+      position: fixed;
+      top: 18px; left: 18px;
+      z-index: 30;
+      width: 44px; height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      cursor: pointer;
+      color: #333;
+      transition: all 0.15s ease;
+    }
+    .menu-btn:hover { background: #fff; color: #00d1ff; }
+    .menu-btn svg { width: 20px; height: 20px; }
+
+    /* ───── Sidebar drawer ───── */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 280px;
+      z-index: 40;
+      background: #fff;
+      border-right: 1px solid rgba(0, 0, 0, 0.08);
+      box-shadow: 2px 0 20px rgba(0, 0, 0, 0.06);
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+      display: flex; flex-direction: column;
+    }
+    .sidebar.open { transform: translateX(0); }
+
+    .sidebar-header {
+      padding: 20px 20px 14px;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .sidebar-title {
+      font-size: 14px; font-weight: 600;
+      letter-spacing: 0.3px;
+      color: #111;
+      text-transform: uppercase;
+    }
+    .sidebar-close {
+      width: 28px; height: 28px;
+      border: none; background: transparent;
+      color: #999;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sidebar-close:hover { color: #111; background: #f5f5f5; }
+    .sidebar-close svg { width: 16px; height: 16px; }
+
+    .sidebar-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+      list-style: none;
+    }
+    .sidebar-item a {
+      display: block;
+      padding: 12px 20px;
+      color: #555;
+      text-decoration: none;
+      font-size: 14px;
+      border-left: 3px solid transparent;
+      transition: all 0.12s ease;
+    }
+    .sidebar-item a:hover {
+      background: #fafafa;
+      color: #111;
+    }
+    .sidebar-item.is-current a {
+      color: #00d1ff;
+      border-left-color: #00d1ff;
+      font-weight: 500;
+      background: rgba(0, 209, 255, 0.05);
+    }
+    .sidebar-empty,
+    .sidebar-loading,
+    .sidebar-error {
+      padding: 20px;
+      color: #999;
+      font-size: 13px;
+      text-align: center;
+    }
+    .sidebar-error { color: #c33; }
+
+    /* Backdrop dims the model behind the drawer; clicking it closes. */
+    .sidebar-backdrop {
+      position: fixed; inset: 0;
+      z-index: 35;
+      background: rgba(0, 0, 0, 0.3);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .sidebar-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* ───── Right-side controls ───── */
     .controls {
       position: fixed; right: 24px; top: 50%;
       transform: translateY(-50%); z-index: 20;
@@ -145,7 +262,9 @@ export function renderViewerHtml(opts: {
     }
 
     @media (max-width: 640px) {
-      .logo { height: 48px; top: 8px; left: 16px; }
+      .logo { height: 48px; top: 8px; left: 80px; }
+      .menu-btn { top: 12px; left: 12px; width: 40px; height: 40px; }
+      .sidebar { width: 84vw; max-width: 320px; }
       .controls {
         right: auto; top: auto; bottom: 16px;
         left: 50%; transform: translateX(-50%);
@@ -161,7 +280,33 @@ export function renderViewerHtml(opts: {
 </head>
 <body>
 
+  <!-- Sidebar toggle button -->
+  <button class="menu-btn" id="menuBtn" aria-label="Open models list">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="3" y1="6"  x2="21" y2="6"/>
+      <line x1="3" y1="12" x2="21" y2="12"/>
+      <line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
+
   <img src="/${slug}/officemate-logo.webp" alt="OfficeMate" class="logo">
+
+  <!-- Sidebar backdrop + drawer -->
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+  <aside class="sidebar" id="sidebar" aria-label="Published models">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Models</span>
+      <button class="sidebar-close" id="sidebarClose" aria-label="Close models list">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <ul class="sidebar-list" id="sidebarList">
+      <li class="sidebar-loading">Loading\u2026</li>
+    </ul>
+  </aside>
 
   <model-viewer id="viewer"
     src="/${slug}/${glbFilename}"
@@ -231,6 +376,11 @@ export function renderViewerHtml(opts: {
   </div>
 
   <script>
+    // Current slug is embedded server-side so we can highlight
+    // the active row in the sidebar without having to parse the
+    // URL.
+    const CURRENT_SLUG = ${JSON.stringify(slug)};
+
     const viewer = document.getElementById('viewer');
     const progressBar = document.getElementById('progressBar');
     const loaderText = document.getElementById('loaderText');
@@ -286,6 +436,71 @@ export function renderViewerHtml(opts: {
     document.addEventListener('fullscreenchange', () => {
       if (!document.fullscreenElement) btnFs.classList.remove('active');
     });
+
+    // ───── Sidebar drawer ─────
+    // Toggle / close / backdrop-click all flip the same .open
+    // class on both the drawer and the backdrop.
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebarBackdrop');
+    const menuBtn = document.getElementById('menuBtn');
+    const closeBtn = document.getElementById('sidebarClose');
+
+    function openSidebar() {
+      sidebar.classList.add('open');
+      backdrop.classList.add('open');
+    }
+    function closeSidebar() {
+      sidebar.classList.remove('open');
+      backdrop.classList.remove('open');
+    }
+    menuBtn.addEventListener('click', openSidebar);
+    closeBtn.addEventListener('click', closeSidebar);
+    backdrop.addEventListener('click', closeSidebar);
+    // Esc closes too — natural keyboard escape from a modal-ish UI.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeSidebar();
+    });
+
+    // ───── Manifest loader ─────
+    // The publish step on the CRM writes /manifest.json into
+    // public/officemate/ on every approval, so this fetch reflects
+    // whatever's currently approved. We add a cache-busting query
+    // param so the browser doesn't serve a stale manifest after a
+    // recent publish — manifests are tiny so the freshness cost
+    // is negligible.
+    const listEl = document.getElementById('sidebarList');
+    fetch('/manifest.json?ts=' + Date.now())
+      .then((r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then((data) => {
+        const models = Array.isArray(data && data.models) ? data.models : [];
+        if (models.length === 0) {
+          listEl.innerHTML = '<li class="sidebar-empty">No published models yet.</li>';
+          return;
+        }
+        // Build the list. We do this with createElement rather than
+        // an innerHTML string so untrusted model names can't inject
+        // markup. Manifest values come from the CRM database, which
+        // accepts user input on the project name field.
+        listEl.innerHTML = '';
+        models.forEach((m) => {
+          if (!m || typeof m.slug !== 'string') return;
+          const li = document.createElement('li');
+          li.className = 'sidebar-item';
+          if (m.slug === CURRENT_SLUG) li.classList.add('is-current');
+          const a = document.createElement('a');
+          a.href = '/' + m.slug + '/';
+          a.textContent = typeof m.name === 'string' ? m.name : m.slug;
+          li.appendChild(a);
+          listEl.appendChild(li);
+        });
+      })
+      .catch((err) => {
+        console.warn('Manifest load failed:', err);
+        listEl.innerHTML = '<li class="sidebar-error">Couldn\\u2019t load the models list.</li>';
+      });
   </script>
 </body>
 </html>
