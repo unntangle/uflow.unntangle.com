@@ -18,7 +18,12 @@ export async function GET() {
   let query = supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, zip_url, glb_url, fbx_url, gltf_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
+      // Include the creator's role via the FK constraint so the
+      // admin dashboard can show Delete only on rows admin
+      // created. The GET response shape must stay in sync with
+      // app/admin/page.tsx's SSR select — otherwise a refresh-
+      // -via-/api/projects would silently drop the field.
+      'id, slug, name, status, revision_count, zip_url, glb_url, fbx_url, gltf_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role)'
     )
     .order('updated_at', { ascending: false });
 
@@ -60,12 +65,10 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  if (!assigned_to) {
-    return NextResponse.json(
-      { error: 'assigned_to (artist user id) required.' },
-      { status: 400 }
-    );
-  }
+  // assigned_to is OPTIONAL now. When omitted (or null), the
+  // project lands in YTA — the admin (or a colleague) can
+  // allocate it later via the Job Allocation tab. When present,
+  // we still validate it points at a real 3D artist.
 
   // Normalise slug — lowercase, alphanumeric + dash only.
   const cleanSlug = slug
@@ -90,23 +93,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Verify the assignee exists and is a 3D artist.
-  const { data: assignee, error: aErr } = await supabase()
-    .from('uflow_users')
-    .select('id, role')
-    .eq('id', assigned_to)
-    .maybeSingle();
-  if (aErr || !assignee) {
-    return NextResponse.json(
-      { error: 'Assigned artist not found.' },
-      { status: 400 }
-    );
-  }
-  if (assignee.role !== '3d_artist') {
-    return NextResponse.json(
-      { error: 'assigned_to must reference a 3D artist user.' },
-      { status: 400 }
-    );
+  // Verify the assignee exists and is a 3D artist — only when
+  // one was provided. Null/undefined means "assign later" and
+  // bypasses this check.
+  if (assigned_to) {
+    const { data: assignee, error: aErr } = await supabase()
+      .from('uflow_users')
+      .select('id, role')
+      .eq('id', assigned_to)
+      .maybeSingle();
+    if (aErr || !assignee) {
+      return NextResponse.json(
+        { error: 'Assigned artist not found.' },
+        { status: 400 }
+      );
+    }
+    if (assignee.role !== '3d_artist') {
+      return NextResponse.json(
+        { error: 'assigned_to must reference a 3D artist user.' },
+        { status: 400 }
+      );
+    }
   }
 
   // ----- Insert with auto-suffix on slug collision -----
@@ -133,7 +140,9 @@ export async function POST(req: NextRequest) {
         slug: candidateSlug,
         name,
         status: 'draft',
-        assigned_to,
+        // Coerce undefined → null so the column is explicitly
+        // unassigned when the admin picked "Assign later".
+        assigned_to: assigned_to ?? null,
         brief: brief?.trim() || null,
         created_by: auth.userId,
       })

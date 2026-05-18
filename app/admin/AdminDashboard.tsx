@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Trash2 } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import Sidebar from '../components/Sidebar';
 import {
@@ -48,6 +49,14 @@ type Project = {
   client_id: string;
   client: { slug: string; name: string };
   assignee: { id: string; name: string; email: string } | null;
+  // Derived server-side from a join on uflow_users.role through
+  // uflow_projects_created_by_fkey. True when the project was
+  // created by an admin user (so admin can delete it from YTA/
+  // YTS), false when it was created by a client (their workflow
+  // owns deletion). Defaults to false in the server normaliser
+  // when the join can't resolve, so the Delete button stays
+  // hidden rather than risk an incorrect affordance.
+  created_by_admin?: boolean;
 };
 
 type Client = { slug: string; name: string };
@@ -85,6 +94,42 @@ export default function AdminDashboard({
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [reassigning, setReassigning] = useState<Project | null>(null);
+
+  // ---- Delete-confirmation modal state.
+  // Lives at the dashboard level so any tab can trigger it. Only
+  // jobs in draft AND created by an admin are eligible — enforced
+  // both here (button visibility) and server-side (DELETE
+  // /api/projects/[id] re-checks). The server is the source of
+  // truth; the UI guard just keeps the dashboard tidy.
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteErr(null);
+    try {
+      const res = await crmFetch(`/api/projects/${deleteTarget.id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setDeleteErr(data.error || 'Could not delete this job.');
+        return;
+      }
+      // Optimistically remove from local state so the row
+      // disappears immediately; router.refresh() re-syncs
+      // initialProjects on next nav.
+      setProjects((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      router.refresh();
+    } catch (e) {
+      setDeleteErr((e as Error).message || 'Network error.');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   // ---- Client filter: synced with the sidebar's ClientSwitcher.
   // Read once on mount from localStorage, then listen for the
@@ -229,12 +274,27 @@ export default function AdminDashboard({
               p: Project & {
                 client: Client | Client[];
                 assignee: Artist | Artist[] | null;
+                // The /api/projects GET shape includes the joined
+                // creator role (since the latest schema update),
+                // so we flatten it the same way app/admin/page.tsx
+                // does on SSR — collapsing to a boolean keeps
+                // ProjectTable's Delete-button guard simple.
+                creator?: { role: string } | { role: string }[] | null;
               }
-            ) => ({
-              ...p,
-              client: Array.isArray(p.client) ? p.client[0] : p.client,
-              assignee: Array.isArray(p.assignee) ? p.assignee[0] : p.assignee,
-            })
+            ) => {
+              const cr = Array.isArray(p.creator)
+                ? p.creator[0]
+                : p.creator;
+              return {
+                ...p,
+                client: Array.isArray(p.client) ? p.client[0] : p.client,
+                assignee: Array.isArray(p.assignee)
+                  ? p.assignee[0]
+                  : p.assignee,
+                created_by_admin: cr?.role === 'admin',
+                creator: undefined,
+              };
+            }
           );
           setProjects(norm);
         }
@@ -454,12 +514,42 @@ export default function AdminDashboard({
                         </span>
                       </td>
                       <td>
-                        <a
-                          className="crm-link"
-                          onClick={() => setReassigning(p)}
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            gap: 8,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            whiteSpace: 'nowrap',
+                          }}
                         >
-                          Assign
-                        </a>
+                          <a
+                            className="crm-link"
+                            onClick={() => setReassigning(p)}
+                          >
+                            Assign
+                          </a>
+                          {/* Delete is gated on `created_by_admin`
+                              — admin can only delete jobs admins
+                              spun up, not jobs raised by clients
+                              (their workflow owns deletion). The
+                              server re-checks this independently. */}
+                          {p.created_by_admin && (
+                            <button
+                              type="button"
+                              className="crm-btn crm-btn-ghost-danger crm-btn-icon"
+                              onClick={() => {
+                                setDeleteErr(null);
+                                setDeleteTarget(p);
+                              }}
+                              title="Delete this job"
+                              style={{ whiteSpace: 'nowrap' }}
+                            >
+                              <Trash2 size={14} strokeWidth={1.75} />
+                              <span>Delete</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -500,6 +590,15 @@ export default function AdminDashboard({
                 meta={currentMeta}
                 onReview={(p) => router.push(crmPath(`/admin/qa/${p.id}`))}
                 onAssign={(p) => setReassigning(p)}
+                // Delete is wired in for every tab; the per-row
+                // guard inside ProjectTable still only renders
+                // the button on draft + created_by_admin rows.
+                // Plumbing it everywhere means future tabs can
+                // surface the action without another prop dance.
+                onDelete={(p) => {
+                  setDeleteErr(null);
+                  setDeleteTarget(p);
+                }}
               />
             )
           )}
@@ -517,6 +616,81 @@ export default function AdminDashboard({
             refreshProjects();
           }}
         />
+      )}
+
+      {/* Delete-confirmation modal. Same pattern the client
+          dashboard uses — backdrop click + Cancel button both
+          dismiss (unless a delete is in flight), and the action
+          button uses the danger style so the destructive intent
+          is unmistakable. */}
+      {deleteTarget && (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!deleting) {
+              setDeleteTarget(null);
+              setDeleteErr(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            style={{ maxWidth: 480 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="crm-modal-header">
+              <h2 className="crm-modal-title">Delete this job?</h2>
+              <button
+                type="button"
+                className="crm-modal-close"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteErr(null);
+                }}
+                disabled={deleting}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p style={{ marginTop: 0, color: 'var(--text-dim)' }}>
+              <strong style={{ color: 'var(--text)' }}>
+                {deleteTarget.name}
+              </strong>{' '}
+              will be permanently removed, along with any reference
+              images that were attached. This can’t be undone.
+            </p>
+            {deleteErr && <div className="crm-error">{deleteErr}</div>}
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                justifyContent: 'flex-end',
+                marginTop: 20,
+              }}
+            >
+              <button
+                type="button"
+                className="crm-btn crm-btn-secondary"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteErr(null);
+                }}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="crm-btn crm-btn-danger"
+                onClick={confirmDelete}
+                disabled={deleting}
+              >
+                {deleting ? 'Deleting…' : 'Yes, delete'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -602,6 +776,7 @@ function ProjectTable({
   meta,
   onReview,
   onAssign,
+  onDelete,
 }: {
   projects: Project[];
   meta: {
@@ -612,6 +787,7 @@ function ProjectTable({
   };
   onReview: (p: Project) => void;
   onAssign: (p: Project) => void;
+  onDelete?: (p: Project) => void;
 }) {
   const hasAction = meta.actionKind !== 'none';
 
@@ -716,30 +892,59 @@ function ProjectTable({
             </td>
             {hasAction && (
               <td>
-                {meta.actionKind === 'review' && (
-                  <a
-                    className="crm-link"
-                    onClick={() => onReview(p)}
-                  >
-                    Review
-                  </a>
-                )}
-                {meta.actionKind === 'assign' && (
-                  <a
-                    className="crm-link"
-                    onClick={() => onAssign(p)}
-                  >
-                    Assign
-                  </a>
-                )}
-                {meta.actionKind === 'reassign' && (
-                  <a
-                    className="crm-link"
-                    onClick={() => onAssign(p)}
-                  >
-                    Reassign
-                  </a>
-                )}
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    gap: 8,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {meta.actionKind === 'review' && (
+                    <a
+                      className="crm-link"
+                      onClick={() => onReview(p)}
+                    >
+                      Review
+                    </a>
+                  )}
+                  {meta.actionKind === 'assign' && (
+                    <a
+                      className="crm-link"
+                      onClick={() => onAssign(p)}
+                    >
+                      Assign
+                    </a>
+                  )}
+                  {meta.actionKind === 'reassign' && (
+                    <a
+                      className="crm-link"
+                      onClick={() => onAssign(p)}
+                    >
+                      Reassign
+                    </a>
+                  )}
+                  {/* Delete — only shown for jobs admin created
+                      that are still in draft. Both conditions are
+                      hard-checked on the server too; this is the
+                      UX layer hiding the affordance for cases
+                      where the call would 404/409. */}
+                  {onDelete &&
+                    p.status === 'draft' &&
+                    p.created_by_admin && (
+                      <button
+                        type="button"
+                        className="crm-btn crm-btn-ghost-danger crm-btn-icon"
+                        onClick={() => onDelete(p)}
+                        title="Delete this job"
+                        style={{ whiteSpace: 'nowrap' }}
+                      >
+                        <Trash2 size={14} strokeWidth={1.75} />
+                        <span>Delete</span>
+                      </button>
+                    )}
+                </div>
               </td>
             )}
           </tr>

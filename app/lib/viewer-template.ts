@@ -1,29 +1,22 @@
 // ============================================================
 // Viewer page template
 // ============================================================
-// Produces the standalone HTML page served at
-//   officemate.unntangle.com/<slug>/
+// Produces the standalone HTML page served from R2 at
+//   <OFFICEMATE_PUBLIC_BASE>/<slug>/index.html
 // for a published project. The page hosts a <model-viewer>
 // pointed at the colocated .glb file plus a standard control
 // strip (rotate / reset / zoom / fullscreen).
 //
-// The template mirrors the original hand-built viewer at
-//   public/officemate/jupiter/index.html
-// almost line-for-line. The only differences are:
-//   - the document <title> and the model alt-text interpolate
-//     the project name
-//   - the <model-viewer src> and the loader-overlay <img src>
-//     interpolate the slug-based asset paths
-//   - the logo path stays at /officemate/<slug>/officemate-logo.webp
-//     so each published folder is self-contained (the publish
-//     step copies the logo in alongside the GLB)
-//   - a left-side drawer is rendered that fetches the
-//     cross-project manifest at runtime and lists every other
-//     published model so the visitor can switch between them
-//     without going back to a dashboard. The current page is
-//     highlighted. The drawer is filled in client-side so adding
-//     a new published model causes every existing viewer page
-//     to show the new entry on next refresh, with no rebuild.
+// Asset references inside the page are RELATIVE URLs so the
+// page works regardless of where the bucket is hosted (raw
+// pub-*.r2.dev today, a custom Cloudflare-fronted domain
+// tomorrow). The layout we depend on is:
+//
+//   <base>/<slug>/index.html              ← this page
+//   <base>/<slug>/<slug>.glb              ← same folder
+//   <base>/<slug>/officemate-logo.webp    ← same folder
+//   <base>/manifest.json                  ← one folder up
+//   <base>/<other-slug>/index.html        ← sibling folders
 //
 // Keeping a single source of truth for the page means future
 // styling updates only touch this file, not every published
@@ -38,9 +31,13 @@ export function renderViewerHtml(opts: {
 }): string {
   const { slug, projectName, glbFilename } = opts;
 
-  // Every public path under /officemate/<slug>/ — the host
-  // (officemate.unntangle.com) maps its root to this folder via
-  // a rewrite, so the model-viewer src is just /<slug>/<file>.
+  // All asset references below are RELATIVE to this page's URL.
+  // The page is served from <base>/<slug>/index.html, so:
+  //   - same-folder assets use their bare filename
+  //   - the cross-project manifest uses `../manifest.json`
+  //   - sidebar nav uses `../<other-slug>/index.html`
+  // Same-origin protections still apply; the page just isn't
+  // assuming the bucket lives at the document root anymore.
   //
   // We escape the project name for safe interpolation into the
   // <title>, meta description, and alt attribute. The slug is
@@ -298,7 +295,7 @@ export function renderViewerHtml(opts: {
     </svg>
   </button>
 
-  <img src="/${slug}/officemate-logo.webp" alt="OfficeMate" class="logo">
+  <img src="officemate-logo.webp" alt="OfficeMate" class="logo">
 
   <!-- Sidebar backdrop + drawer -->
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
@@ -318,7 +315,7 @@ export function renderViewerHtml(opts: {
   </aside>
 
   <model-viewer id="viewer"
-    src="/${slug}/${glbFilename}"
+    src="${glbFilename}"
     alt="${safeName} 3D Model"
     camera-controls touch-action="pan-y"
     interaction-prompt="none"
@@ -329,7 +326,7 @@ export function renderViewerHtml(opts: {
     max-camera-orbit="auto auto 300%"
     interpolation-decay="100">
     <div class="loading-overlay" slot="poster" id="loadingOverlay">
-      <img src="/${slug}/officemate-logo.webp" alt="Loading" class="loader-logo">
+      <img src="officemate-logo.webp" alt="Loading" class="loader-logo">
       <div class="progress-track">
         <div class="progress-fill" id="progressBar"></div>
       </div>
@@ -490,14 +487,14 @@ export function renderViewerHtml(opts: {
     });
 
     // ───── Manifest loader ─────
-    // The publish step on the CRM writes /manifest.json into
-    // public/officemate/ on every approval, so this fetch reflects
-    // whatever's currently approved. We add a cache-busting query
-    // param so the browser doesn't serve a stale manifest after a
-    // recent publish — manifests are tiny so the freshness cost
-    // is negligible.
+    // The publish step writes manifest.json one level above
+    // this page (at <base>/manifest.json). We fetch it with a
+    // relative URL so the same template works regardless of
+    // where the bucket is hosted. Cache-busting query param so
+    // a freshly-approved model shows up immediately rather than
+    // sitting behind an edge-cached manifest from a minute ago.
     const listEl = document.getElementById('sidebarList');
-    fetch('/manifest.json?ts=' + Date.now())
+    fetch('../manifest.json?ts=' + Date.now())
       .then((r) => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -519,7 +516,11 @@ export function renderViewerHtml(opts: {
           li.className = 'sidebar-item';
           if (m.slug === CURRENT_SLUG) li.classList.add('is-current');
           const a = document.createElement('a');
-          a.href = '/' + m.slug + '/';
+          // Sibling folder + explicit index.html since the raw
+          // R2 host doesn't auto-serve directory indexes. A
+          // custom-domain front-end with rewrites could shorten
+          // this, but the explicit form is portable.
+          a.href = '../' + m.slug + '/index.html';
           a.textContent = typeof m.name === 'string' ? m.name : m.slug;
           li.appendChild(a);
           listEl.appendChild(li);

@@ -37,7 +37,17 @@ export default function CreateJobForm({
   const [clientSlug, setClientSlug] = useState(clients[0]?.slug || '');
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
-  const [assignedTo, setAssignedTo] = useState(artists[0]?.id || '');
+  // "__unassigned__" is a UI sentinel for the "Assign later" choice
+  // — a UUID can never look like this, so we can safely test for
+  // it without false positives. On submit we translate it into
+  // assigned_to: null in the API payload, which puts the new job
+  // into YTA so it shows up under Job Allocation.
+  // We default to the sentinel rather than the first artist so an
+  // admin can spin up a placeholder without thinking about who
+  // it'll end up with; they (or a colleague) can allocate it from
+  // the Job Allocation tab later.
+  const ASSIGN_LATER = '__unassigned__';
+  const [assignedTo, setAssignedTo] = useState<string>(ASSIGN_LATER);
   const [brief, setBrief] = useState('');
   const [refs, setRefs] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
@@ -54,14 +64,17 @@ export default function CreateJobForm({
 
   async function submit() {
     setErr(null);
-    if (!name.trim() || !slug.trim() || !clientSlug || !assignedTo) {
+    // assignedTo is allowed to be the ASSIGN_LATER sentinel —
+    // unlike before, the admin doesn't have to pick an artist.
+    // We only require the human-typed fields.
+    if (!name.trim() || !slug.trim() || !clientSlug) {
       setErr('Fill in all required fields.');
       return;
     }
-    if (artists.length === 0) {
-      setErr('No 3D artists exist yet. Add one first.');
-      return;
-    }
+    // "No artists yet" is no longer a blocker now that an admin
+    // can choose Assign Later — they can create the job and let a
+    // newly-added artist pick it up. We leave the message hint
+    // visible in the form but don't fail the submit.
 
     setBusy(true);
     try {
@@ -117,7 +130,12 @@ export default function CreateJobForm({
           client_slug: clientSlug,
           slug,
           name,
-          assigned_to: assignedTo,
+          // Translate the sentinel into a real null so the server
+          // sees an explicit "assign later" instead of "the admin
+          // forgot the field". The server's POST handler accepts
+          // null and stores it as-is, landing the row in YTA.
+          assigned_to:
+            assignedTo === ASSIGN_LATER ? null : assignedTo,
           brief: brief.trim() || undefined,
           reference_image_urls: referenceUrls,
         }),
@@ -207,22 +225,30 @@ export default function CreateJobForm({
 
             <div className="crm-form-group">
               <label className="crm-label">Assign to artist</label>
-              {artists.length === 0 ? (
-                <p style={{ color: 'var(--text-dim)', fontSize: 13, margin: '4px 0 0' }}>
-                  No artists yet — add one from the sidebar first.
+              <select
+                className="crm-input"
+                value={assignedTo}
+                onChange={(e) => setAssignedTo(e.target.value)}
+              >
+                {/* Default option — sends the job to YTA so an admin
+                    can allocate later from the Job Allocation tab.
+                    Visually distinct (italic) so it doesn't look
+                    like a real artist name. */}
+                <option value={ASSIGN_LATER}>
+                  Assign later — send to YTA
+                </option>
+                {artists.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.email})
+                  </option>
+                ))}
+              </select>
+              {artists.length === 0 && (
+                <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '6px 0 0' }}>
+                  No artists yet — the job will go to YTA. You can
+                  add an artist and allocate from the Job Allocation
+                  tab anytime.
                 </p>
-              ) : (
-                <select
-                  className="crm-input"
-                  value={assignedTo}
-                  onChange={(e) => setAssignedTo(e.target.value)}
-                >
-                  {artists.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.email})
-                    </option>
-                  ))}
-                </select>
               )}
             </div>
 
@@ -291,7 +317,7 @@ export default function CreateJobForm({
               <button
                 className="crm-btn"
                 onClick={submit}
-                disabled={busy || !name || !slug || !clientSlug || !assignedTo}
+                disabled={busy || !name || !slug || !clientSlug}
               >
                 {busy ? stageLabel : 'Create job'}
               </button>

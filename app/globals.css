@@ -4,6 +4,23 @@
    into the marketing site (or vice-versa).
    ============================================================ */
 
+/* When the <body> itself carries .crm-root (set in app/layout.tsx),
+   zero out the browser's default body margin and the html element's
+   margin/padding so the sidebar sits flush against the viewport edges.
+   Without this, the user agent's ~8px body margin shows up as a thin
+   strip of page background above/below/left of the sidebar.
+
+   We scope to `body.crm-root` (not bare `body`) so this still won't
+   touch the marketing site, which doesn't carry the class. */
+html:has(body.crm-root) {
+  margin: 0;
+  padding: 0;
+}
+body.crm-root {
+  margin: 0;
+  padding: 0;
+}
+
 .crm-root {
   /* ----- tokens (light theme, black & white) ----- */
   --bg: #ffffff;

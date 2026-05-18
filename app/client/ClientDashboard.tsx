@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Pencil, Trash2 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
-import { crmPath } from '../lib/client-fetch';
+import { crmFetch, crmPath } from '../lib/client-fetch';
 
 // ============================================================
 // Types
@@ -85,8 +86,45 @@ export default function ClientDashboard({
   brand: Brand;
   currentUser: { name: string; role: 'client' };
 }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const [projects] = useState<Project[]>(initialProjects);
+  const [projects, setProjects] = useState<Project[]>(initialProjects);
+
+  // ----- Delete-confirmation modal state -----
+  // Lives at the dashboard level (not per-row) so the modal can
+  // render once on top of any tab without each row having to
+  // mount its own. `pending` carries the project the user just
+  // hit Delete on; clearing it closes the modal.
+  const [pending, setPending] = useState<Project | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!pending) return;
+    setDeleting(true);
+    setDeleteErr(null);
+    try {
+      const res = await crmFetch(`/api/client/projects/${pending.id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setDeleteErr(data.error || 'Could not delete this job.');
+        return;
+      }
+      // Optimistically splice out of local state so the row
+      // disappears immediately. Also kick a router.refresh() so
+      // the server-rendered initialProjects on the next nav stays
+      // in sync (e.g. if the user reloads, the row stays gone).
+      setProjects((prev) => prev.filter((p) => p.id !== pending.id));
+      setPending(null);
+      router.refresh();
+    } catch (e) {
+      setDeleteErr((e as Error).message || 'Network error.');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   // ----- Mode plumbing -----
   const tabParam = searchParams?.get('tab');
@@ -198,6 +236,7 @@ export default function ClientDashboard({
                 projects={allocated}
                 showAsset={true}
                 showRevision={true}
+                onDelete={setPending}
               />
             )
           )}
@@ -276,6 +315,7 @@ export default function ClientDashboard({
                 projects={notApproved}
                 showAsset={true}
                 forceStatusLabel="Open"
+                onDelete={setPending}
               />
             )
           )}
@@ -324,6 +364,81 @@ export default function ClientDashboard({
           )}
         </div>
       </main>
+
+      {/* ============================== Delete confirmation modal ============================== */}
+      {/* Centralised at the dashboard level so any tab can trigger
+          it via setPending(...). Click-outside (backdrop) cancels;
+          the modal itself stops propagation so clicks inside don't
+          dismiss. Confirmation is required because the action is
+          irreversible — the DB row plus its references cascade out
+          immediately. */}
+      {pending && (
+        <div
+          className="crm-modal-backdrop"
+          onClick={() => {
+            if (!deleting) {
+              setPending(null);
+              setDeleteErr(null);
+            }
+          }}
+        >
+          <div
+            className="crm-modal"
+            style={{ maxWidth: 480 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="crm-modal-header">
+              <h2 className="crm-modal-title">Delete this job?</h2>
+              <button
+                type="button"
+                className="crm-modal-close"
+                onClick={() => {
+                  setPending(null);
+                  setDeleteErr(null);
+                }}
+                disabled={deleting}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p style={{ marginTop: 0, color: 'var(--text-dim)' }}>
+              <strong style={{ color: 'var(--text)' }}>{pending.name}</strong>{' '}
+              will be permanently removed, along with any reference
+              images you uploaded. This can’t be undone.
+            </p>
+            {deleteErr && <div className="crm-error">{deleteErr}</div>}
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                justifyContent: 'flex-end',
+                marginTop: 20,
+              }}
+            >
+              <button
+                type="button"
+                className="crm-btn crm-btn-secondary"
+                onClick={() => {
+                  setPending(null);
+                  setDeleteErr(null);
+                }}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="crm-btn crm-btn-danger"
+                onClick={confirmDelete}
+                disabled={deleting}
+              >
+                {deleting ? 'Deleting…' : 'Delete job'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -418,6 +533,12 @@ function ClientStatusPill({ label }: { label: string }) {
 //                       they uploaded for that revision.
 //   - forceStatusLabel: when set, every row's status pill shows
 //                       this label instead of the per-row fallback.
+//   - onDelete:         opens the delete-confirmation modal for
+//                       a row. The button only renders for rows
+//                       still in 'draft' — once admin has
+//                       allocated the job, the client can no
+//                       longer mutate it (the server enforces
+//                       this independently in /api/client/projects/[id]).
 // ============================================================
 function ProjectTable({
   projects,
@@ -425,12 +546,14 @@ function ProjectTable({
   showReviewAction = false,
   showRevision = false,
   forceStatusLabel,
+  onDelete,
 }: {
   projects: Project[];
   showAsset: boolean;
   showReviewAction?: boolean;
   showRevision?: boolean;
   forceStatusLabel?: string;
+  onDelete?: (p: Project) => void;
 }) {
   function fallbackLabel(p: Project): string {
     if (p.status === 'approved') return 'Approved';
@@ -464,6 +587,17 @@ function ProjectTable({
               "what is it → what state is it in → what can I do".
               On EQA rows the Review link lives here. */}
           {showReviewAction && <th>Action</th>}
+          {/* Manage — Edit/Delete for jobs still in draft (i.e.
+              not yet allocated to an artist). The column always
+              renders when onDelete is wired in, even on tabs
+              where no row is in draft, so the layout stays
+              consistent. Non-draft rows show an em-dash.
+              Width is pinned because table-layout: fixed would
+              otherwise share columns evenly — with 7 columns
+              that leaves no room for two icon+label buttons. */}
+          {onDelete && (
+            <th style={{ textAlign: 'right', width: 180 }}>Actions</th>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -542,6 +676,55 @@ function ProjectTable({
                 >
                   Review
                 </a>
+              </td>
+            )}
+            {onDelete && (
+              <td style={{ textAlign: 'right' }}>
+                {p.status === 'draft' ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 6,
+                      justifyContent: 'flex-end',
+                      // Buttons must not break onto two lines
+                      // ("Edi / t") when the column is tight —
+                      // the parent <td> has word-break: break-word
+                      // for long slugs/emails, which we have to
+                      // explicitly opt out of here.
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <a
+                      className="crm-btn crm-btn-ghost crm-btn-icon"
+                      href={crmPath(`/client/${p.id}/edit`)}
+                      title="Edit name, brief, and references"
+                      style={{
+                        textDecoration: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Pencil size={14} strokeWidth={1.75} />
+                      <span>Edit</span>
+                    </a>
+                    <button
+                      type="button"
+                      className="crm-btn crm-btn-ghost-danger crm-btn-icon"
+                      onClick={() => onDelete(p)}
+                      title="Delete this job"
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      <Trash2 size={14} strokeWidth={1.75} />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                ) : (
+                  <span
+                    style={{ color: 'var(--text-faint)', fontSize: 13 }}
+                    title="Locked once an artist is allocated. Contact your admin for changes."
+                  >
+                    —
+                  </span>
+                )}
               </td>
             )}
           </tr>

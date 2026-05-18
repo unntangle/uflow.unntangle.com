@@ -36,6 +36,16 @@ type ProjectRow = {
     | { id: string; name: string; email: string }
     | { id: string; name: string; email: string }[]
     | null;
+  // Joined via `uflow_projects_created_by_fkey`. Only the role is
+  // pulled — we use it to decide whether the admin can delete a
+  // 'draft' row from their dashboard. Jobs created by clients are
+  // off-limits to admin deletion; their owning client deletes them
+  // via /client. Possible shapes: single object, single-element
+  // array, or null when created_by is itself null (legacy seed rows).
+  creator:
+    | { role: string }
+    | { role: string }[]
+    | null;
 };
 
 export default async function AdminPage() {
@@ -46,7 +56,7 @@ export default async function AdminPage() {
       supabase()
         .from('uflow_projects')
         .select(
-          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
+          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role)'
         )
         .order('updated_at', { ascending: false }),
       supabase()
@@ -60,7 +70,21 @@ export default async function AdminPage() {
     const r = p as ProjectRow;
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
     const a = Array.isArray(r.assignee) ? r.assignee[0] : r.assignee;
-    return { ...r, client: c ?? { slug: '', name: '' }, assignee: a };
+    const cr = Array.isArray(r.creator) ? r.creator[0] : r.creator;
+    // Collapse the joined creator role down to a boolean the
+    // dashboard component can branch on without re-doing the
+    // shape gymnastics every render. Null creator (e.g. legacy
+    // rows with created_by = null) defaults to false so the
+    // Delete button stays hidden — safer than guessing.
+    return {
+      ...r,
+      client: c ?? { slug: '', name: '' },
+      assignee: a,
+      created_by_admin: cr?.role === 'admin',
+      // Strip the raw join out of the wire payload; the component
+      // only consumes the boolean above.
+      creator: undefined,
+    };
   });
 
   return (
