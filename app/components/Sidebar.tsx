@@ -15,6 +15,7 @@ import {
   PanelLeftOpen,
   Folder,
   Inbox,
+  List,
   ChevronRight,
   CheckCircle2,
   UserCircle,
@@ -199,6 +200,7 @@ export default function Sidebar({
   const JOBS_KEY = 'crm:sidebarGroup:jobs';
   const isOnJobsChild =
     isOnAllocation ||
+    isActive('/admin/jobs/list') ||
     isActive('/admin/jobs/new') ||
     isActive('/admin/jobs/reassign');
   const [jobsOpen, setJobsOpen] = useState<boolean>(isOnJobsChild);
@@ -369,6 +371,15 @@ export default function Sidebar({
                 </button>
                 {jobsOpen && !collapsed && (
                   <div className="crm-sidebar-children">
+                    <button
+                      className={`crm-sidebar-link crm-sidebar-link-child ${
+                        isActive('/admin/jobs/list') ? 'is-active' : ''
+                      }`}
+                      onClick={() => router.push(crmPath('/admin/jobs/list'))}
+                    >
+                      <List size={14} strokeWidth={1.75} aria-hidden="true" />
+                      <span>List Jobs</span>
+                    </button>
                     <button
                       className={`crm-sidebar-link crm-sidebar-link-child ${
                         isOnAllocation ? 'is-active' : ''

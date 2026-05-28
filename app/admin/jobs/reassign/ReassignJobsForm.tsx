@@ -183,6 +183,7 @@ export default function ReassignJobsForm({
                         <StatusBadge
                           status={p.status}
                           revisionCount={p.revision_count}
+                          assigned={p.assigned_to !== null}
                         />
                         { (p.status === 'wip' || p.status === 'iqa_wip' || p.status === 'eqa_wip') && (
                           // Inline note next to the badge to flag that

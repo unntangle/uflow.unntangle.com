@@ -37,6 +37,131 @@ export const runtime = 'nodejs';
 //         specific message so the UI can explain why the delete
 //         failed.
 // ============================================================
+// ============================================================
+// PATCH /api/projects/[id]
+//
+// Admin-only project edit. Updates the human-readable `name`
+// and the optional `brief`. Deliberately scoped to those two
+// fields:
+//
+//   - `slug` is NEVER editable here. It's the R2 path prefix
+//     (officemate/<slug>/...), the public viewer URL segment,
+//     and half of the (client_id, slug) unique key. Changing it
+//     would orphan every already-uploaded GLB/reference and
+//     break the public link of an approved model. The form
+//     shows slug as read-only for the same reason the client
+//     edit form does.
+//   - `status`, `assigned_to`, revision counts, and asset URLs
+//     are owned by their respective workflow endpoints (assign,
+//     start, upload, feedback, client-review). Renaming must not
+//     be a backdoor into mutating pipeline state.
+//
+// Unlike the client edit flow (draft-only), an admin may rename
+// a job at ANY status -- a label fix is harmless on an in-flight
+// or approved job, and admins are the ones who notice typos once
+// a job is already moving. There's no ownership gate beyond the
+// admin role: admins manage all jobs regardless of who created
+// them.
+//
+// Body (JSON), all fields optional but at least one required:
+//   { name?: string, brief?: string | null }
+//
+// Returns the updated row's id + name on success.
+// ============================================================
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const auth = await requireApiUser('admin');
+  if (auth instanceof NextResponse) return auth;
+
+  const { id } = await params;
+
+  let body: { name?: unknown; brief?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  // Build the update payload from only the recognised, present
+  // fields. We validate `name` if supplied (non-empty after
+  // trim); `brief` may be cleared to null.
+  const update: { name?: string; brief?: string | null; updated_at: string } = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (typeof body.name === 'string') {
+    const trimmed = body.name.trim();
+    if (!trimmed) {
+      return NextResponse.json(
+        { error: 'Name cannot be empty.' },
+        { status: 400 }
+      );
+    }
+    if (trimmed.length > 200) {
+      return NextResponse.json(
+        { error: 'Name is too long (200 character max).' },
+        { status: 400 }
+      );
+    }
+    update.name = trimmed;
+  }
+
+  if ('brief' in body) {
+    if (body.brief === null) {
+      update.brief = null;
+    } else if (typeof body.brief === 'string') {
+      const trimmed = body.brief.trim();
+      update.brief = trimmed || null;
+    } else {
+      return NextResponse.json(
+        { error: 'Brief must be a string or null.' },
+        { status: 400 }
+      );
+    }
+  }
+
+  // Nothing meaningful to change -> 400 so the caller knows the
+  // request was a no-op rather than silently "succeeding".
+  if (update.name === undefined && !('brief' in update)) {
+    return NextResponse.json(
+      { error: 'Provide a name or brief to update.' },
+      { status: 400 }
+    );
+  }
+
+  // Ensure the project exists before updating so we can return a
+  // clean 404 rather than a silent zero-row update.
+  const { data: existing, error: loadErr } = await supabase()
+    .from('uflow_projects')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (loadErr) {
+    console.error('[projects.patch.load]', loadErr);
+    return NextResponse.json({ error: 'DB error' }, { status: 500 });
+  }
+  if (!existing) {
+    return NextResponse.json({ error: 'Not found.' }, { status: 404 });
+  }
+
+  const { data: updated, error: updErr } = await supabase()
+    .from('uflow_projects')
+    .update(update)
+    .eq('id', id)
+    .select('id, name, brief')
+    .single();
+
+  if (updErr) {
+    console.error('[projects.patch]', updErr);
+    return NextResponse.json({ error: 'DB error' }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, project: updated });
+}
+
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
