@@ -578,16 +578,40 @@ function ProjectTable({
     );
   }
 
+  // Per-column sort. Project sorts A-Z by name; Revision Round
+  // numerically; Created chronologically; Status by the client-
+  // facing label rank (Open -> EQA -> EQA Rejected -> Approved).
+  // References/Asset/Action/Actions are links or controls, not
+  // sortable data. Cycles asc -> desc -> off.
+  const clientStatusRank = (p: Project): number => {
+    const label = forceStatusLabel ?? fallbackLabel(p);
+    const order: Record<string, number> = {
+      Open: 0,
+      EQA: 1,
+      'EQA Rejected': 2,
+      Approved: 3,
+    };
+    return order[label] ?? 99;
+  };
+  const { sorted, sort, onSort } = useTableSort(projects, {
+    name: (p) => p.name,
+    revision: (p) => p.revision_count,
+    created: (p) => new Date(p.created_at),
+    status: (p) => clientStatusRank(p),
+  });
+
   return (
     <table className="crm-table">
       <thead>
         <tr>
-          <th>Project</th>
+          <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
           <th>References</th>
-          {showRevision && <th>Revision Round</th>}
-          <th>Created</th>
+          {showRevision && (
+            <SortableTh label="Revision Round" sortKey="revision" sort={sort} onSort={onSort} />
+          )}
+          <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
           {showAsset && <th>Asset</th>}
-          <th>Status</th>
+          <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
           {/* Action sits last so the row reads left-to-right as
               "what is it → what state is it in → what can I do".
               On EQA rows the Review link lives here. */}
@@ -606,7 +630,7 @@ function ProjectTable({
         </tr>
       </thead>
       <tbody>
-        {projects.map((p) => (
+        {sorted.map((p) => (
           <tr key={p.id}>
             <td>
               <strong style={{ display: 'block' }}>{p.name}</strong>

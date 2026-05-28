@@ -1350,6 +1350,45 @@ body.crm-root {
 }
 
 /* ----- QA review page ----- */
+/* ----- QA review: fit-to-screen layout -----
+   The review page pins itself to the viewport height so the 3D
+   model fits on screen without the page scrolling as a whole.
+   Layout is a flex column:
+     .crm-qa-page    — full-height flex column (overrides the
+                       shared .crm-page padding/scroll for this
+                       page only). Its own overflow is hidden so
+                       only the lower zone scrolls.
+     .crm-qa-top     — fixed zone: compact header + the 3D viewer
+                       + the controls hint. Does not scroll.
+     .crm-qa-scroll  — flexible zone: brief + feedback + note +
+                       actions. Scrolls independently when its
+                       content exceeds the leftover height, so the
+                       feedback uploader is always reachable.
+   The viewer height is driven by ModelViewer's `height` prop
+   (passed as a vh value), so the top zone sizes to the model plus
+   the header, and whatever's left goes to the scroll zone. */
+.crm-root .crm-qa-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  padding: 20px 28px 0;
+  overflow: hidden;
+}
+.crm-root .crm-qa-top {
+  flex-shrink: 0;
+}
+.crm-root .crm-qa-scroll {
+  flex: 1;
+  min-height: 0; /* allow the flex child to actually shrink + scroll */
+  overflow-y: auto;
+  /* Bottom padding so the last control isn't flush against the
+     viewport edge when scrolled to the end. */
+  padding-bottom: 32px;
+  /* A little breathing room above the first scrolled section. */
+  padding-top: 4px;
+}
 /* Two-column layout: references on the left, GLB viewer on the
    right. Both columns are equal width so the viewer has as much
    room as the references gallery. */

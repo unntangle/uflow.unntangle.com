@@ -12,11 +12,20 @@ import { useEffect, useRef } from 'react';
 type Props = {
   src: string;
   alt?: string;
-  height?: number;
+  // Height of the viewer. A number is treated as pixels; a string
+  // is used verbatim as a CSS length, so callers can pass
+  // viewport-relative values like 'min(640px, 60vh)' to make the
+  // viewer fit the screen vertically on large displays.
+  height?: number | string;
 };
 
 export default function ModelViewer({ src, alt, height = 380 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Normalise the height prop to a CSS length string once, so both
+  // the inner <model-viewer> element and the wrapper div use the
+  // same value. Numbers become 'Npx'; strings pass through.
+  const cssHeight = typeof height === 'number' ? `${height}px` : height;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -41,7 +50,7 @@ export default function ModelViewer({ src, alt, height = 380 }: Props) {
     mv.setAttribute('exposure', '1');
     mv.className = 'crm-model-viewer';
     mv.style.width = '100%';
-    mv.style.height = `${height}px`;
+    mv.style.height = cssHeight;
     mv.style.display = 'block';
 
     // Inject high-visibility custom cursors inside the model-viewer shadow DOM
@@ -73,7 +82,7 @@ export default function ModelViewer({ src, alt, height = 380 }: Props) {
       container.innerHTML = '';
       if (intervalId) clearInterval(intervalId);
     };
-  }, [src, alt, height]);
+  }, [src, alt, cssHeight]);
 
-  return <div ref={containerRef} style={{ height }} />;
+  return <div ref={containerRef} style={{ height: cssHeight }} />;
 }

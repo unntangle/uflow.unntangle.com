@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, Clipboard, ExternalLink, Download, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import JSZip from 'jszip';
 import Sidebar from '../../../components/Sidebar';
-import ModelViewer from '../../../components/ModelViewer';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 
 // ============================================================
@@ -340,6 +339,23 @@ export default function ClientReviewPage({
                 flexShrink: 0,
               }}
             >
+              {project.glb_url && (
+                <a
+                  className="crm-btn"
+                  href={crmPath(`/admin/qa/${project.id}/model`)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open the 3D model full-screen in a new tab"
+                  style={{ padding: '6px 12px', fontSize: 12 }}
+                >
+                  <ExternalLink
+                    size={13}
+                    strokeWidth={1.75}
+                    aria-hidden="true"
+                  />
+                  View model
+                </a>
+              )}
               {references.length > 0 && (
                 <>
                   <a
@@ -378,21 +394,6 @@ export default function ClientReviewPage({
               {downloadRefsErr}
             </div>
           )}
-
-          {/* ============================== Model viewer ============================== */}
-          <div>
-            {project.glb_url ? (
-              <ModelViewer src={project.glb_url} height={640} />
-            ) : (
-              <div className="crm-empty">
-                <h3>No GLB uploaded</h3>
-                <p>The artist hasn&apos;t uploaded a model yet.</p>
-              </div>
-            )}
-            <p className="crm-qa-hint">
-              Drag to rotate · scroll to zoom · right-click to pan
-            </p>
-          </div>
 
           {project.brief && (
             <section className="crm-card" style={{ marginTop: 24 }}>

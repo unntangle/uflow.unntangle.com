@@ -424,6 +424,16 @@ export default function AdminDashboard({
 
   const currentMeta = tabMeta[tab];
 
+  // Sort state for the standalone Job Allocation (YTA) table.
+  // That table is rendered inline (not via ProjectTable), so it
+  // needs its own hook. Status is constant (all YTA) so we only
+  // expose name/client/created as sort columns.
+  const ytaSort = useTableSort(yta, {
+    name: (p) => p.name,
+    client: (p) => p.client.name,
+    created: (p) => new Date(p.created_at),
+  });
+
   return (
     <div className="crm-shell">
       <Sidebar
@@ -480,16 +490,16 @@ export default function AdminDashboard({
               <table className="crm-table">
                 <thead>
                   <tr>
-                    <th>Project</th>
+                    <SortableTh label="Project" sortKey="name" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <th>References</th>
-                    <th>Client</th>
-                    <th>Created</th>
+                    <SortableTh label="Client" sortKey="client" sort={ytaSort.sort} onSort={ytaSort.onSort} />
+                    <SortableTh label="Created" sortKey="created" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {yta.map((p) => (
+                  {ytaSort.sorted.map((p) => (
                     <tr key={p.id}>
                       <td>
                         <strong style={{ display: 'block' }}>{p.name}</strong>
