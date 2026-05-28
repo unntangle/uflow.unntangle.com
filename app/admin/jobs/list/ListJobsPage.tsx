@@ -11,6 +11,11 @@ import {
 } from '../../../components/ClientSwitcher';
 import { crmPath } from '../../../lib/client-fetch';
 import { ProjectStatus } from '../../../lib/supabase';
+import {
+  useTableSort,
+  SortableTh,
+  statusRank,
+} from '../../../lib/use-table-sort';
 
 // ============================================================
 // Types
@@ -90,6 +95,18 @@ export default function ListJobsPage({
     });
   }, [projects, selectedClientId, query]);
 
+  // Column accessors for sorting. Created/Updated sort
+  // chronologically (Date), Status sorts by pipeline rank, the
+  // rest are plain strings sorted A-Z (case-insensitive).
+  const { sorted, sort, onSort } = useTableSort(visible, {
+    name: (p) => p.name,
+    artist: (p) => p.assignee?.name ?? null,
+    client: (p) => p.client.name,
+    created: (p) => new Date(p.created_at),
+    updated: (p) => new Date(p.updated_at),
+    status: (p) => statusRank(p.status),
+  });
+
   return (
     <div className="crm-shell">
       <Sidebar name={currentUser.name} role={currentUser.role} />
@@ -131,17 +148,17 @@ export default function ListJobsPage({
             <table className="crm-table">
               <thead>
                 <tr>
-                  <th>Project</th>
-                  <th>Artist</th>
-                  <th>Client</th>
-                  <th>Created</th>
-                  <th>Updated</th>
-                  <th>Status</th>
+                  <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
+                  <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
+                  <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
+                  <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
+                  <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
+                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
                   <th style={{ textAlign: 'right' }}>Edit</th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((p) => (
+                {sorted.map((p) => (
                   <tr key={p.id}>
                     <td>
                       <strong style={{ display: 'block' }}>{p.name}</strong>

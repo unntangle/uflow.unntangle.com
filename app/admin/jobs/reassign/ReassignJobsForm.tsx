@@ -6,6 +6,11 @@ import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 import { ProjectStatus } from '../../../lib/supabase';
+import {
+  useTableSort,
+  SortableTh,
+  statusRank,
+} from '../../../lib/use-table-sort';
 
 // ============================================================
 // Types
@@ -115,6 +120,17 @@ export default function ReassignJobsForm({
     persistReassignment(p, target);
   }
 
+  // Per-column sort for the reassign table. Project/Client/
+  // Current-artist sort alphabetically; Status by pipeline rank.
+  // The 'Reassign to' dropdown and 'Action' columns aren't
+  // sortable (they're controls, not data). Cycles asc->desc->off.
+  const { sorted, sort, onSort } = useTableSort(projects, {
+    name: (p) => p.name,
+    client: (p) => p.client.name,
+    status: (p) => statusRank(p.status),
+    artist: (p) => p.assignee?.name ?? null,
+  });
+
   return (
     <div className="crm-shell">
       <Sidebar name={currentUser.name} role={currentUser.role} />
@@ -157,16 +173,16 @@ export default function ReassignJobsForm({
             <table className="crm-table">
               <thead>
                 <tr>
-                  <th style={{ width: '28%' }}>Project</th>
-                  <th>Client</th>
-                  <th>Status</th>
-                  <th>Current artist</th>
+                  <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} style={{ width: '28%' }} />
+                  <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
+                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
+                  <SortableTh label="Current artist" sortKey="artist" sort={sort} onSort={onSort} />
                   <th style={{ width: '24%' }}>Reassign to</th>
                   <th style={{ textAlign: 'right' }}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {projects.map((p) => {
+                {sorted.map((p) => {
                   const state = rowState[p.id] ?? { stage: 'idle' };
                   const target = selections[p.id];
                   const dirty = !!target && target !== p.assigned_to;

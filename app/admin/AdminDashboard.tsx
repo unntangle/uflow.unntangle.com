@@ -10,6 +10,11 @@ import {
   getStoredClientId,
 } from '../components/ClientSwitcher';
 import { crmFetch, crmPath } from '../lib/client-fetch';
+import {
+  useTableSort,
+  SortableTh,
+  statusRank,
+} from '../lib/use-table-sort';
 
 // ============================================================
 // Types
@@ -791,24 +796,39 @@ function ProjectTable({
 }) {
   const hasAction = meta.actionKind !== 'none';
 
+  // Per-column sort. Artist/Project/Client/Revision sort by their
+  // natural value; Created/Updated chronologically; Status by
+  // pipeline rank. Cycles asc -> desc -> off (default order).
+  const { sorted, sort, onSort } = useTableSort(projects, {
+    artist: (p) => p.assignee?.name ?? null,
+    name: (p) => p.name,
+    client: (p) => p.client.name,
+    revision: (p) => p.revision_count,
+    created: (p) => new Date(p.created_at),
+    updated: (p) => new Date(p.updated_at),
+    status: (p) => statusRank(p.status),
+  });
+
   return (
     <table className="crm-table">
       <thead>
         <tr>
-          <th>Artist</th>
-          <th>Project</th>
+          <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
+          <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
           <th>References</th>
-          <th>Client</th>
-          {meta.showRevision && <th>Revision</th>}
-          <th>Created</th>
-          <th>Updated</th>
+          <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
+          {meta.showRevision && (
+            <SortableTh label="Revision" sortKey="revision" sort={sort} onSort={onSort} />
+          )}
+          <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
+          <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
           {meta.showAsset && <th>Asset</th>}
-          <th>Status</th>
+          <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
           {hasAction && <th>Action</th>}
         </tr>
       </thead>
       <tbody>
-        {projects.map((p) => (
+        {sorted.map((p) => (
           <tr key={p.id}>
             <td>
               {p.assignee?.name || (

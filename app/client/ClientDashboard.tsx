@@ -5,6 +5,11 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Pencil, Trash2 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import { crmFetch, crmPath } from '../lib/client-fetch';
+import {
+  useTableSort,
+  SortableTh,
+  statusRank,
+} from '../lib/use-table-sort';
 
 // ============================================================
 // Types
