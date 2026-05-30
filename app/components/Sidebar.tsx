@@ -162,7 +162,10 @@ export default function Sidebar({
   // its own localStorage key so it doesn't fight admin's group.
   const CLIENT_JOBS_KEY = 'crm:sidebarGroup:clientJobs';
   const isOnClientJobsChild =
-    isOnClientAllocated || isOnClientApproved || isActive('/client/new');
+    isOnClientAllocated ||
+    isOnClientApproved ||
+    isActive('/client/new') ||
+    isActive('/client/jobs/list');
   const [clientJobsOpen, setClientJobsOpen] = useState<boolean>(
     isOnClientJobsChild
   );
@@ -541,6 +544,15 @@ export default function Sidebar({
             </button>
             {clientJobsOpen && !collapsed && (
               <div className="crm-sidebar-children">
+                <button
+                  className={`crm-sidebar-link crm-sidebar-link-child ${
+                    isActive('/client/jobs/list') ? 'is-active' : ''
+                  }`}
+                  onClick={() => router.push(crmPath('/client/jobs/list'))}
+                >
+                  <List size={14} strokeWidth={1.75} aria-hidden="true" />
+                  <span>List Jobs</span>
+                </button>
                 <button
                   className={`crm-sidebar-link crm-sidebar-link-child ${
                     isActive('/client/new') ? 'is-active' : ''

@@ -38,7 +38,7 @@ export async function GET() {
   const { data, error } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
+      'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number)'
     )
     .eq('client_id', auth.clientId)
     .order('updated_at', { ascending: false });
@@ -47,7 +47,39 @@ export async function GET() {
     console.error('[client.projects.list]', error);
     return NextResponse.json({ error: 'DB error' }, { status: 500 });
   }
-  return NextResponse.json({ projects: data });
+
+  // Derive a client-scoped revision count from the client's own
+  // EQA feedback rows. uflow_projects.revision_count mixes IQA +
+  // EQA rounds; the client must only ever see rounds they
+  // themselves rejected, so we never expose the raw count to the
+  // client surface. Mirrors the server-rendered dashboard in
+  // app/client/page.tsx.
+  const projects = (data ?? []).map((p) => {
+    const r = p as Record<string, unknown> & {
+      client_feedback?: { revision_number: number | null }[] | null;
+    };
+    const clientFeedback = Array.isArray(r.client_feedback)
+      ? r.client_feedback
+      : [];
+    const clientRevisions = Array.from(
+      new Set(
+        clientFeedback
+          .map((row) => row?.revision_number)
+          .filter((n): n is number => typeof n === 'number')
+      )
+    );
+    const clientRevisionCount = clientRevisions.length;
+    return {
+      ...r,
+      client_feedback: undefined,
+      client_revision_count: clientRevisionCount,
+      latest_client_revision:
+        clientRevisionCount > 0 ? Math.max(...clientRevisions) : null,
+      has_client_rejection: clientRevisionCount > 0,
+    };
+  });
+
+  return NextResponse.json({ projects });
 }
 
 // ============================================================

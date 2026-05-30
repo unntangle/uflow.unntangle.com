@@ -209,6 +209,23 @@ export default function FeedbackGallery({
     return q ? `${base}?${q}` : base;
   }
 
+  // Controlled value for the revision <select>. It MUST always
+  // correspond to a rendered <option>; otherwise React holds a
+  // value that matches nothing, a controlled/uncontrolled
+  // mismatch that triggers a hydration error and makes the page
+  // flicker on load. The 'all' sentinel only has a matching
+  // option when there are 2+ revisions, so with a single
+  // revision we fall back to that revision's own value (the
+  // "all" and single-revision views are identical anyway).
+  const revisionSelectValue =
+    revisionFilter !== null
+      ? String(revisionFilter)
+      : availableRevisions.length > 1
+      ? 'all'
+      : availableRevisions.length === 1
+      ? String(availableRevisions[0])
+      : 'all';
+
   return (
     <div className="crm-page">
       <header className="crm-page-header">
@@ -240,7 +257,7 @@ export default function FeedbackGallery({
           {availableRevisions.length >= 1 && (
             <select
               className="crm-input"
-              value={revisionFilter !== null ? String(revisionFilter) : 'all'}
+              value={revisionSelectValue}
               onChange={(e) => {
                 const v = e.target.value;
                 const href =

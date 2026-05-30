@@ -29,6 +29,17 @@ type Project = {
     | 'client_review'
     | 'approved';
   revision_count: number;
+  // Client-facing revision round count. This is the number of
+  // distinct rounds the CLIENT (EQA) rejected — derived server-
+  // side from uflow_client_feedback_images. It deliberately
+  // EXCLUDES internal IQA rejection rounds that are otherwise
+  // folded into `revision_count`, so the client never sees the
+  // internal admin/artist back-and-forth.
+  client_revision_count?: number;
+  // Highest client (EQA) revision number on record. Used only to
+  // deep-link into the client's feedback gallery. null when the
+  // client has never rejected.
+  latest_client_revision?: number | null;
   glb_url: string | null;
   approved_glb_url: string | null;
   assigned_to: string | null;
@@ -567,15 +578,26 @@ function ProjectTable({
     return 'Open';
   }
 
-  // Build the feedback-gallery URL for a given project + revision.
-  // The `source=client` param tells the gallery page to read from
-  // uflow_client_feedback_images (the client's own screenshots)
-  // rather than the admin-side feedback table the client never
-  // has access to. The server still enforces brand scoping.
-  function feedbackHref(projectId: string, revision: number): string {
-    return crmPath(
-      `/projects/${projectId}/feedback?revision=${revision}&source=client`
-    );
+  // Build the feedback-gallery URL for a given project, scoped to
+  // the client's own EQA feedback. `source=client` tells the
+  // gallery to read from uflow_client_feedback_images (the
+  // client's screenshots) rather than the admin-side IQA table
+  // the client never has access to. We deep-link to the client's
+  // latest rejection round so the gallery opens with a concrete,
+  // valid revision filter (the revision picker then lets them
+  // step back through earlier rounds). Linking without a revision
+  // would land the gallery in its "all revisions" mode, whose
+  // controlled <select> has no matching option when only one
+  // round exists — which caused the page to flicker on load.
+  // The server still enforces brand scoping.
+  function clientFeedbackHref(
+    projectId: string,
+    revision: number | null | undefined
+  ): string {
+    const params = new URLSearchParams();
+    if (typeof revision === 'number') params.set('revision', String(revision));
+    params.set('source', 'client');
+    return crmPath(`/projects/${projectId}/feedback?${params.toString()}`);
   }
 
   // Per-column sort. Project sorts A-Z by name; Revision Round
@@ -595,7 +617,7 @@ function ProjectTable({
   };
   const { sorted, sort, onSort } = useTableSort(projects, {
     name: (p) => p.name,
-    revision: (p) => p.revision_count,
+    revision: (p) => p.client_revision_count ?? 0,
     created: (p) => new Date(p.created_at),
     status: (p) => clientStatusRank(p),
   });
@@ -650,27 +672,30 @@ function ProjectTable({
             </td>
             {showRevision && (
               <td>
-                {/* Revision Round. Shows the latest rejection round
-                    as a clickable number. The standalone feedback
-                    gallery (opened in a new tab) has its own
-                    revision picker, so a dropdown here would just
-                    duplicate that affordance.
-                    - 0 rejections : em-dash placeholder
-                    - N rejections : single "N" hyperlink to the
-                                     gallery scoped to revision N */}
-                {p.revision_count === 0 ? (
+                {/* Revision Round (client-facing). Shows ONLY the
+                    rounds the client themselves rejected (EQA) —
+                    internal IQA rejections are excluded upstream
+                    so the client never sees the admin/artist
+                    back-and-forth. The number is a clickable
+                    count linking to the client's feedback gallery.
+                    - 0 client rejections : em-dash placeholder
+                    - N client rejections : "N" hyperlink to the
+                                            client-side gallery */}
+                {(p.client_revision_count ?? 0) === 0 ? (
                   <span style={{ color: 'var(--text-faint)', fontSize: 13 }}>
                     —
                   </span>
                 ) : (
                   <a
                     className="crm-link"
-                    href={feedbackHref(p.id, p.revision_count)}
+                    href={clientFeedbackHref(p.id, p.latest_client_revision)}
                     target="_blank"
                     rel="noreferrer"
-                    title={`View your feedback from revision ${p.revision_count}`}
+                    title={`View your feedback — ${p.client_revision_count} rejection round${
+                      (p.client_revision_count ?? 0) === 1 ? '' : 's'
+                    }`}
                   >
-                    {p.revision_count}
+                    {p.client_revision_count}
                   </a>
                 )}
               </td>
