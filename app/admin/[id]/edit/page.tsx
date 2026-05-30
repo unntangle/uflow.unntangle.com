@@ -60,6 +60,14 @@ export default async function EditAdminJobPage({ params }: EditPageProps) {
     | null;
   const client = Array.isArray(clientRel) ? clientRel[0] : clientRel;
 
+  // Existing reference images, so the form can show them with a
+  // remove affordance (same pattern as the client edit page).
+  const { data: refs } = await supabase()
+    .from('uflow_project_references')
+    .select('id, image_url, created_at')
+    .eq('project_id', id)
+    .order('created_at', { ascending: true });
+
   return (
     <EditAdminJobForm
       project={{
@@ -70,6 +78,11 @@ export default async function EditAdminJobPage({ params }: EditPageProps) {
         status: project.status,
       }}
       clientName={client?.name ?? 'Unknown brand'}
+      brandSlug={client?.slug ?? ''}
+      initialReferences={(refs ?? []).map((r) => ({
+        id: r.id as string,
+        image_url: r.image_url as string,
+      }))}
       currentUser={{ name: user.name, role: user.role as 'admin' }}
     />
   );

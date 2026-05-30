@@ -2,14 +2,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil } from 'lucide-react';
+import { Pencil, Trash2 } from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
 import {
   CLIENT_FILTER_EVENT,
   getStoredClientId,
 } from '../../../components/ClientSwitcher';
-import { crmPath } from '../../../lib/client-fetch';
+import { crmPath, crmFetch } from '../../../lib/client-fetch';
 import { ProjectStatus } from '../../../lib/supabase';
 import {
   useTableSort,
@@ -64,8 +64,39 @@ export default function ListJobsPage({
   currentUser: { name: string; role: 'admin' };
 }) {
   const router = useRouter();
-  const [projects] = useState<Project[]>(initialProjects);
+  const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [query, setQuery] = useState('');
+
+  // Hard-delete (purge) state. `confirmTarget` is the row pending
+  // confirmation; `deletingId` disables the dialog while the
+  // request is in flight; `delError` surfaces a failure inline.
+  const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [delError, setDelError] = useState<string | null>(null);
+
+  // Calls the shared hard-delete endpoint, which wipes the job
+  // from the DB and R2. On success we drop the row locally so the
+  // table updates without a full reload.
+  async function handlePurge(p: Project) {
+    setDeletingId(p.id);
+    setDelError(null);
+    try {
+      const res = await crmFetch(`/api/projects/${p.id}/purge`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDelError(data?.error || 'Delete failed.');
+        return;
+      }
+      setProjects((prev) => prev.filter((x) => x.id !== p.id));
+      setConfirmTarget(null);
+    } catch (err) {
+      setDelError((err as Error).message || 'Network error.');
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   // ---- Brand filter, synced with the sidebar ClientSwitcher.
   // Same wiring as AdminDashboard: read on mount, then listen for
@@ -154,7 +185,7 @@ export default function ListJobsPage({
                   <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
                   <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
-                  <th style={{ textAlign: 'right' }}>Edit</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -193,23 +224,122 @@ export default function ListJobsPage({
                       />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        className="crm-btn crm-btn-ghost crm-btn-icon"
-                        onClick={() =>
-                          router.push(crmPath(`/admin/${p.id}/edit`))
-                        }
-                        title="Rename this job or edit its brief"
-                        style={{ whiteSpace: 'nowrap' }}
+                      <div
+                        style={{
+                          display: 'inline-flex',
+                          gap: 8,
+                          justifyContent: 'flex-end',
+                        }}
                       >
-                        <Pencil size={14} strokeWidth={1.75} />
-                        <span>Edit</span>
-                      </button>
+                        <button
+                          type="button"
+                          className="crm-btn crm-btn-ghost crm-btn-icon"
+                          onClick={() =>
+                            router.push(crmPath(`/admin/${p.id}/edit`))
+                          }
+                          title="Rename this job or edit its brief"
+                          style={{ whiteSpace: 'nowrap' }}
+                        >
+                          <Pencil size={14} strokeWidth={1.75} />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="crm-btn crm-btn-ghost crm-btn-icon"
+                          onClick={() => {
+                            setDelError(null);
+                            setConfirmTarget(p);
+                          }}
+                          title="Permanently delete this job and all its data"
+                          style={{ whiteSpace: 'nowrap', color: '#dc2626' }}
+                        >
+                          <Trash2 size={14} strokeWidth={1.75} />
+                          <span>Delete</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+
+          {/* Hard-delete confirmation. Destructive + irreversible,
+              so we require an explicit click on "Delete permanently"
+              rather than deleting on the row button directly. */}
+          {confirmTarget && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              onClick={() => {
+                if (!deletingId) setConfirmTarget(null);
+              }}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0,0,0,0.45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1000,
+                padding: 16,
+              }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  background: 'var(--surface, #fff)',
+                  border: '1px solid var(--border, #e5e7eb)',
+                  borderRadius: 12,
+                  maxWidth: 460,
+                  width: '100%',
+                  padding: 24,
+                  boxShadow: '0 12px 40px rgba(0,0,0,0.22)',
+                }}
+              >
+                <h3 style={{ margin: '0 0 8px', fontSize: 18 }}>
+                  Delete &ldquo;{confirmTarget.name}&rdquo;?
+                </h3>
+                <p
+                  style={{
+                    margin: '0 0 16px',
+                    color: 'var(--text-dim)',
+                    fontSize: 14,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  This permanently removes{' '}
+                  <strong>{confirmTarget.slug}</strong> and everything tied to
+                  it &mdash; feedback, references, and any uploaded or published
+                  3D files &mdash; from both the database and storage. This
+                  cannot be undone.
+                </p>
+                {delError && (
+                  <p style={{ color: '#dc2626', fontSize: 13, margin: '0 0 12px' }}>
+                    {delError}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    className="crm-btn crm-btn-ghost"
+                    disabled={!!deletingId}
+                    onClick={() => setConfirmTarget(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="crm-btn"
+                    disabled={!!deletingId}
+                    onClick={() => handlePurge(confirmTarget)}
+                    style={{ background: '#dc2626', borderColor: '#dc2626', color: '#fff' }}
+                  >
+                    {deletingId ? 'Deleting\u2026' : 'Delete permanently'}
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </main>

@@ -30,6 +30,8 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -249,4 +251,66 @@ export function approvedKey(
   filename: string
 ): string {
   return `${clientSlug}/${projectSlug}/approved/${filename}`;
+}
+
+// ============================================================
+// Listing + bulk delete
+// ============================================================
+// Used by the hard-delete ("purge") flow to remove every object
+// under a project's key prefix. R2/S3 has no real folders, so
+// "delete a folder" = list every key under the prefix (paginated
+// via the continuation token) then batch-delete them. DeleteObjects
+// accepts up to 1000 keys per call.
+// ============================================================
+export async function listKeysByPrefix(prefix: string): Promise<string[]> {
+  const e = env();
+  const keys: string[] = [];
+  let continuationToken: string | undefined = undefined;
+  do {
+    const res: any = await client().send(
+      new ListObjectsV2Command({
+        Bucket: e.bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+    for (const obj of res.Contents ?? []) {
+      if (obj.Key) keys.push(obj.Key);
+    }
+    // Only follow the cursor while the response says it's truncated,
+    // otherwise we'd loop forever on a stale token.
+    continuationToken = res.IsTruncated
+      ? res.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+  return keys;
+}
+
+// Deletes every object under `prefix`. Returns the count removed.
+// Safe on an empty prefix-match (returns 0). Batches in groups of
+// 1000 (the S3 DeleteObjects limit).
+export async function deleteByPrefix(prefix: string): Promise<number> {
+  // Hard guard: never allow an empty / whitespace-only prefix.
+  // That would match the ENTIRE bucket and wipe every project's
+  // assets. Callers always pass a project-scoped prefix such as
+  // "officemate/hola-black/".
+  const clean = prefix.replace(/^\/+/, '');
+  if (!clean.trim()) {
+    throw new Error('deleteByPrefix refused an empty prefix.');
+  }
+  const e = env();
+  const keys = await listKeysByPrefix(clean);
+  let deleted = 0;
+  for (let i = 0; i < keys.length; i += 1000) {
+    const batch = keys.slice(i, i + 1000);
+    if (batch.length === 0) continue;
+    await client().send(
+      new DeleteObjectsCommand({
+        Bucket: e.bucket,
+        Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+      })
+    );
+    deleted += batch.length;
+  }
+  return deleted;
 }

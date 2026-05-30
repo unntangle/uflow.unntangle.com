@@ -18,55 +18,85 @@ type ProjectLite = {
   status: ProjectStatus;
 };
 
+// An existing reference row already saved on the server. The
+// user can mark it for removal (toggling its id into
+// removedRefIds) but can't change its URL.
+type ExistingRef = { id: string; image_url: string };
+
 // ============================================================
 // EditAdminJobForm
 //
-// Admin-facing edit form for a job's display `name` and `brief`.
-// Modelled on the client EditClientJobForm but trimmed to the
-// fields an admin owns:
-//
+// Admin-facing edit form. Edits:
 //   - name  : freely editable, required (non-empty).
 //   - brief : freely editable, optional (clears to null).
-//   - slug  : READ-ONLY. Shown so the admin can see the
-//             identifier, but locked -- it's the R2 path prefix
-//             and the public viewer URL segment, so changing it
-//             would orphan uploaded assets and break links.
+//   - reference images : add new ones (signed + uploaded to R2)
+//                        and/or remove existing ones. Admins own
+//                        the job, so references are editable at
+//                        ANY status (the PATCH enforces this).
+//   - slug  : READ-ONLY. It's the R2 path prefix and the public
+//             viewer URL segment; changing it would orphan every
+//             uploaded asset and break the published model link.
 //
-// Reference-image editing is intentionally left out of the admin
-// edit flow: references are a client-authored artefact attached
-// at job-creation time, and the admin's QA/reassign tools don't
-// touch them. If that's ever needed it can be added here the
-// same way the client form does it (sign -> PUT -> PATCH).
-//
-// On save we PATCH /api/projects/[id]. The endpoint is admin-only
-// and accepts a rename at any status, so -- unlike the client
-// form -- there's no draft-only guard here.
+// Reference upload mirrors the client edit form exactly: sign N
+// PUT URLs via /api/references-sign (which accepts admin for any
+// brand), PUT the files to R2, then PATCH /api/projects/[id]
+// with the resulting public URLs + the ids being removed.
 // ============================================================
 export default function EditAdminJobForm({
   project,
   clientName,
+  brandSlug,
+  initialReferences,
   currentUser,
 }: {
   project: ProjectLite;
   clientName: string;
+  brandSlug: string;
+  initialReferences: ExistingRef[];
   currentUser: { name: string; role: 'admin' };
 }) {
   const router = useRouter();
 
   const [name, setName] = useState(project.name);
   const [brief, setBrief] = useState(project.brief ?? '');
+
+  // Two-bucket reference state (same shape as the client form):
+  //   existingRefs   : already-saved rows; X toggles removal.
+  //   removedRefIds  : ids marked for removal this session.
+  //   newRefs        : files picked this session, not yet uploaded.
+  const [existingRefs] = useState<ExistingRef[]>(initialReferences);
+  const [removedRefIds, setRemovedRefIds] = useState<Set<string>>(new Set());
+  const [newRefs, setNewRefs] = useState<File[]>([]);
+
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'saving'>(
+    'idle'
+  );
   const [err, setErr] = useState<string | null>(null);
 
-  // Dirty check so the Save button is disabled when nothing has
-  // actually changed -- mirrors the per-row "dirty" guard on the
-  // reassign page. Compared against the original values (with the
-  // same empty-string -> null normalisation the PATCH applies to
-  // brief) so reverting an edit back to the original disables the
-  // button again.
+  function addNewRefs(picked: FileList | File[]) {
+    const arr = Array.from(picked).filter((f) => /^image\//.test(f.type));
+    setNewRefs((prev) => [...prev, ...arr]);
+  }
+  function removeNewRefAt(i: number) {
+    setNewRefs((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  function toggleExistingRefRemoval(id: string) {
+    setRemovedRefIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Dirty check so Save is disabled when nothing has changed —
+  // covers name, brief (with the same empty -> null normalisation
+  // the PATCH applies), and any reference add/remove.
   const briefChanged = (brief.trim() || null) !== (project.brief ?? null);
   const nameChanged = name.trim() !== project.name;
-  const dirty = nameChanged || briefChanged;
+  const refsChanged = newRefs.length > 0 || removedRefIds.size > 0;
+  const dirty = nameChanged || briefChanged || refsChanged;
 
   async function submit() {
     setErr(null);
@@ -79,32 +109,92 @@ export default function EditAdminJobForm({
 
     setBusy(true);
     try {
+      // ---- 1. Upload any newly added reference images ----
+      // Signed + PUT to R2 under <brandSlug>/<projectSlug>/references/
+      // using the project's existing slug. references-sign accepts
+      // admin for any brand.
+      let addUrls: string[] = [];
+      if (newRefs.length > 0) {
+        setStage('uploading-refs');
+        const signRes = await crmFetch('/api/references-sign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_slug: brandSlug,
+            project_slug: project.slug,
+            count: newRefs.length,
+            content_types: newRefs.map(
+              (f) => f.type || 'application/octet-stream'
+            ),
+          }),
+        });
+        const signData = await signRes.json();
+        if (!signRes.ok) {
+          setErr(signData.error || 'Could not sign reference uploads.');
+          return;
+        }
+
+        addUrls = await Promise.all(
+          newRefs.map(async (f, i) => {
+            const item = signData.signed[i];
+            const r = await fetch(item.upload_url, {
+              method: 'PUT',
+              headers: { 'Content-Type': item.content_type },
+              body: f,
+            });
+            if (!r.ok) {
+              const text = await r.text().catch(() => '');
+              throw new Error(
+                `Upload failed for ${f.name} (${r.status})${
+                  text ? `: ${text.slice(0, 200)}` : ''
+                }`
+              );
+            }
+            return item.public_url as string;
+          })
+        );
+      }
+
+      // ---- 2. PATCH the project ----
+      setStage('saving');
+      const body: Record<string, unknown> = {
+        name: trimmedName,
+        brief: brief.trim() || null,
+      };
+      if (addUrls.length > 0) body.add_reference_image_urls = addUrls;
+      if (removedRefIds.size > 0) {
+        body.remove_reference_ids = Array.from(removedRefIds);
+      }
+
       const res = await crmFetch(`/api/projects/${project.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: trimmedName,
-          // Empty string -> null on the server, but we send it
-          // explicitly so clearing a brief actually persists.
-          brief: brief.trim() || null,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
         setErr(data.error || 'Failed to save changes.');
         return;
       }
-      // Back to the List Jobs page so the renamed row shows
-      // immediately. router.refresh() re-runs the server component
-      // and repopulates the list with the patched row.
       router.push(crmPath('/admin/jobs/list'));
       router.refresh();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setBusy(false);
+      setStage('idle');
     }
   }
+
+  const stageLabel =
+    stage === 'uploading-refs'
+      ? 'Uploading references…'
+      : stage === 'saving'
+      ? 'Saving changes…'
+      : 'Save changes';
+
+  const visibleExistingCount = existingRefs.length - removedRefIds.size;
+  const totalRefsAfter = visibleExistingCount + newRefs.length;
 
   return (
     <div className="crm-shell">
@@ -116,8 +206,8 @@ export default function EditAdminJobForm({
             <div>
               <h1 className="crm-page-title">Edit Job</h1>
               <p className="crm-page-sub">
-                {clientName} · Update the job name or brief. The slug
-                is locked once a job is created.
+                {clientName} · Update the job name, brief, or reference
+                images. The slug is locked once a job is created.
               </p>
             </div>
             <button
@@ -130,10 +220,6 @@ export default function EditAdminJobForm({
           </header>
 
           <div className="crm-card">
-            {/* Current status, shown read-only so the admin has
-                context for what they're editing (e.g. renaming an
-                approved job vs a draft). Editing the name never
-                changes status. */}
             <div
               style={{
                 display: 'flex',
@@ -160,10 +246,9 @@ export default function EditAdminJobForm({
               />
             </div>
 
-            {/* Slug is read-only on edit -- same reasoning as the
-                client edit form. It's the R2 path prefix and the
-                public viewer URL segment; changing it would orphan
-                uploaded objects and break the published model link. */}
+            {/* Slug stays read-only — it's the R2 path prefix and
+                the public viewer URL segment, so changing it would
+                orphan uploaded assets and break the published link. */}
             <div className="crm-form-group">
               <label className="crm-label">Slug (read-only)</label>
               <input
@@ -180,9 +265,8 @@ export default function EditAdminJobForm({
                   color: 'var(--text-faint)',
                 }}
               >
-                The slug is locked once a job is created. It&apos;s
-                used in the asset storage paths and the public model
-                URL.
+                The slug is locked once a job is created. It&apos;s used in
+                the asset storage paths and the public model URL.
               </div>
             </div>
 
@@ -196,6 +280,108 @@ export default function EditAdminJobForm({
                 placeholder="What needs to be modelled? Dimensions, materials, constraints…"
                 disabled={busy}
               />
+            </div>
+
+            {/* Reference images — add new (sign + PUT to R2) and/or
+                mark existing ones for removal. */}
+            <div className="crm-form-group">
+              <label className="crm-label">Reference images</label>
+              <div
+                className="crm-dropzone"
+                onClick={() => document.getElementById('ref-input')?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  addNewRefs(e.dataTransfer.files);
+                }}
+              >
+                <input
+                  id="ref-input"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    if (e.target.files) addNewRefs(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <strong>Click or drop reference photos</strong>
+                <div className="crm-dropzone-hint">
+                  PNG/JPG/WebP. Visible to the assigned artist.
+                </div>
+              </div>
+
+              {(existingRefs.length > 0 || newRefs.length > 0) && (
+                <>
+                  <div
+                    style={{
+                      marginTop: 12,
+                      fontSize: 12,
+                      color: 'var(--text-dim)',
+                    }}
+                  >
+                    {totalRefsAfter} reference{totalRefsAfter === 1 ? '' : 's'}{' '}
+                    after save
+                    {removedRefIds.size > 0 && (
+                      <> · {removedRefIds.size} marked for removal</>
+                    )}
+                  </div>
+
+                  <div className="crm-feedback-grid">
+                    {existingRefs.map((r) => {
+                      const marked = removedRefIds.has(r.id);
+                      return (
+                        <div
+                          key={r.id}
+                          className="crm-feedback-thumb"
+                          style={{
+                            opacity: marked ? 0.35 : 1,
+                            outline: marked
+                              ? '2px dashed var(--danger)'
+                              : 'none',
+                            outlineOffset: '-2px',
+                            transition: 'opacity 0.15s',
+                          }}
+                          title={
+                            marked
+                              ? 'Marked for removal — click ↩ to undo'
+                              : ''
+                          }
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={r.image_url} alt="reference" />
+                          <button
+                            onClick={() => toggleExistingRefRemoval(r.id)}
+                            aria-label={
+                              marked ? 'Undo remove' : 'Mark for removal'
+                            }
+                            disabled={busy}
+                            title={marked ? 'Undo' : 'Remove'}
+                          >
+                            {marked ? '↩' : '×'}
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {newRefs.map((f, i) => (
+                      <div key={`new-${i}`} className="crm-feedback-thumb">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={URL.createObjectURL(f)} alt={f.name} />
+                        <button
+                          onClick={() => removeNewRefAt(i)}
+                          aria-label="Remove"
+                          disabled={busy}
+                          title="Remove (not yet uploaded)"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             {err && <div className="crm-error">{err}</div>}
@@ -220,7 +406,7 @@ export default function EditAdminJobForm({
                 onClick={submit}
                 disabled={busy || !name.trim() || !dirty}
               >
-                {busy ? 'Saving…' : 'Save changes'}
+                {busy ? stageLabel : 'Save changes'}
               </button>
             </div>
           </div>

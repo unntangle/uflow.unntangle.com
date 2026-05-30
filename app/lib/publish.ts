@@ -226,6 +226,18 @@ export async function publishGlbToPublicFolder(opts: {
 // sidebar surfaces what's just shipped.
 // ============================================================
 
+// ============================================================
+// refreshManifest
+//
+// Public entry point to regenerate the cross-project manifest
+// after a project is REMOVED (hard delete). Re-runs the same
+// query writeManifest uses, so a purged approved model drops
+// out of every viewer's "Other models" sidebar on next load.
+// ============================================================
+export async function refreshManifest(): Promise<void> {
+  return writeManifest();
+}
+
 type ManifestModel = {
   slug: string;
   name: string;

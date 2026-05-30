@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../../lib/auth';
 import { supabase } from '../../../lib/supabase';
+import { isOurPublicUrl } from '../../../lib/r2';
 
 export const runtime = 'nodejs';
 
@@ -77,7 +78,12 @@ export async function PATCH(
 
   const { id } = await params;
 
-  let body: { name?: unknown; brief?: unknown };
+  let body: {
+    name?: unknown;
+    brief?: unknown;
+    add_reference_image_urls?: unknown;
+    remove_reference_ids?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -122,11 +128,28 @@ export async function PATCH(
     }
   }
 
+  // Reference image mutations. Admins own the job, so (unlike the
+  // client edit, which is draft-only) references are editable at
+  // ANY status here. Added URLs must be from our R2 bucket; the
+  // removes are scoped by project_id so a stray id can't drop
+  // another project's rows.
+  const rawAdd = Array.isArray(body.add_reference_image_urls)
+    ? body.add_reference_image_urls
+    : [];
+  const addUrls = rawAdd
+    .filter((u): u is string => typeof u === 'string')
+    .filter((u) => isOurPublicUrl(u));
+  const rawRemove = Array.isArray(body.remove_reference_ids)
+    ? body.remove_reference_ids
+    : [];
+  const removeIds = rawRemove.filter((x): x is string => typeof x === 'string');
+  const hasRefChange = addUrls.length > 0 || removeIds.length > 0;
+
   // Nothing meaningful to change -> 400 so the caller knows the
   // request was a no-op rather than silently "succeeding".
-  if (update.name === undefined && !('brief' in update)) {
+  if (update.name === undefined && !('brief' in update) && !hasRefChange) {
     return NextResponse.json(
-      { error: 'Provide a name or brief to update.' },
+      { error: 'Provide a name, brief, or reference change to update.' },
       { status: 400 }
     );
   }
@@ -157,6 +180,37 @@ export async function PATCH(
   if (updErr) {
     console.error('[projects.patch]', updErr);
     return NextResponse.json({ error: 'DB error' }, { status: 500 });
+  }
+
+  // ----- Remove reference rows -----
+  // Scoped by project_id in addition to id IN (...) so a payload
+  // can't drop reference rows belonging to another project.
+  if (removeIds.length > 0) {
+    const { error: dErr } = await supabase()
+      .from('uflow_project_references')
+      .delete()
+      .eq('project_id', id)
+      .in('id', removeIds);
+    if (dErr) {
+      console.error('[projects.patch.refs.remove]', dErr);
+      return NextResponse.json({ error: 'DB error' }, { status: 500 });
+    }
+  }
+
+  // ----- Add reference rows -----
+  if (addUrls.length > 0) {
+    const rows = addUrls.map((url) => ({
+      project_id: id,
+      image_url: url,
+      uploaded_by: auth.userId,
+    }));
+    const { error: iErr } = await supabase()
+      .from('uflow_project_references')
+      .insert(rows);
+    if (iErr) {
+      console.error('[projects.patch.refs.add]', iErr);
+      return NextResponse.json({ error: 'DB error' }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true, project: updated });

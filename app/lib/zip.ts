@@ -45,6 +45,26 @@ function baseName(entryName: string): string {
   return tail.replace(/\s+/g, '_');
 }
 
+// Strip a trailing "_<digits>" from a base name so repeated
+// uploads don't accumulate (Jupiter_1 -> Jupiter, not
+// Jupiter_1 -> Jupiter_1_2).
+function stripSeq(base: string): string {
+  return base.replace(/_\d+$/, '');
+}
+
+// Insert an incrementing "_<seq>" before the extension so every
+// upload produces a BRAND-NEW GLB filename, and therefore a
+// brand-new public URL. Without this, re-uploading within the
+// same revision round overwrites the same R2 key in place, and
+// the browser / CDN keeps serving the cached previous model to
+// QA and the client. e.g. ("Jupiter.glb", 3) -> "Jupiter_3.glb".
+function withSeq(filename: string, seq: number): string {
+  const dot = filename.lastIndexOf('.');
+  const name = dot > 0 ? filename.slice(0, dot) : filename;
+  const ext = dot > 0 ? filename.slice(dot) : '';
+  return `${stripSeq(name)}_${seq}${ext}`;
+}
+
 // Best-effort content type for the three model formats. R2
 // stores whatever we set, and the public URL serves it back
 // verbatim, which is what `<model-viewer>` needs.
@@ -64,7 +84,10 @@ async function extractAndUpload(
   zipBuffer: Buffer,
   clientSlug: string,
   projectSlug: string,
-  revision: number
+  revision: number,
+  // Monotonic per-project upload counter. Appended to the GLB
+  // filename for cache-busting (see withSeq).
+  uploadSeq: number
 ): Promise<Omit<ProcessedUpload, 'zipUrl'>> {
   // ----- 1. Parse zip -----
   let zip: AdmZip;
@@ -109,7 +132,10 @@ async function extractAndUpload(
   }
 
   // ----- 3. Upload each model in parallel -----
-  const glbFile = baseName(glbEntry.entryName);
+  // The GLB is the file QA + the client preview, so it's the one
+  // that must get a unique name every upload (cache-busting).
+  // FBX/GLTF aren't previewed, so they keep their plain names.
+  const glbFile = withSeq(baseName(glbEntry.entryName), uploadSeq);
   const fbxFile = fbxEntry ? baseName(fbxEntry.entryName) : null;
   const gltfFile = gltfEntry ? baseName(gltfEntry.entryName) : null;
 
@@ -152,14 +178,16 @@ export async function processArtistZipFromUrl(
   zipUrl: string,
   clientSlug: string,
   projectSlug: string,
-  revision: number
+  revision: number,
+  uploadSeq: number
 ): Promise<ProcessedUpload> {
   const buffer = await fetchFromUrl(zipUrl);
   const extracted = await extractAndUpload(
     buffer,
     clientSlug,
     projectSlug,
-    revision
+    revision,
+    uploadSeq
   );
   return { zipUrl, ...extracted };
 }
@@ -173,7 +201,8 @@ export async function processArtistZip(
   zipBuffer: Buffer,
   clientSlug: string,
   projectSlug: string,
-  revision: number
+  revision: number,
+  uploadSeq: number
 ): Promise<ProcessedUpload> {
   const sourceKey = uploadKey(clientSlug, projectSlug, revision, 'source.zip');
 
@@ -183,7 +212,7 @@ export async function processArtistZip(
       body: zipBuffer,
       contentType: 'application/zip',
     }),
-    extractAndUpload(zipBuffer, clientSlug, projectSlug, revision),
+    extractAndUpload(zipBuffer, clientSlug, projectSlug, revision, uploadSeq),
   ]);
 
   // Defensive: the parallel call returns a `publicUrl` we already

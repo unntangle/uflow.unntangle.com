@@ -60,7 +60,7 @@ export async function POST(
   // ----- 1. Load project + client -----
   const { data: project, error: pErr } = await supabase()
     .from('uflow_projects')
-    .select('id, slug, status, revision_count, client:uflow_clients(slug)')
+    .select('id, slug, status, revision_count, glb_url, client:uflow_clients(slug)')
     .eq('id', id)
     .maybeSingle();
 
@@ -96,6 +96,16 @@ export async function POST(
   // the rejected version is being replaced.
   const currentRevision = project.revision_count;
 
+  // Cache-busting upload sequence. Every finalize bumps the GLB
+  // filename's "_N" suffix so the new model gets a fresh public
+  // URL — otherwise a re-upload within the same revision round
+  // overwrites the same R2 key and QA / the client keep seeing
+  // the cached old model. We derive the next number from the
+  // current glb_url's suffix (".../Name_2.glb" -> 3); a missing
+  // or unsuffixed URL (first upload, or a legacy row) starts at 1.
+  const prevSeqMatch = project.glb_url?.match(/_(\d+)\.glb(?:[?#].*)?$/i);
+  const uploadSeq = prevSeqMatch ? parseInt(prevSeqMatch[1], 10) + 1 : 1;
+
   // ----- 2. Extract + re-upload pieces -----
   let processed;
   try {
@@ -103,7 +113,8 @@ export async function POST(
       zip_url,
       cSlug,
       project.slug,
-      currentRevision
+      currentRevision,
+      uploadSeq
     );
   } catch (err) {
     console.error('[finalize-upload] zip error', err);
@@ -138,6 +149,7 @@ export async function POST(
   return NextResponse.json({
     ok: true,
     revision: currentRevision,
+    upload_seq: uploadSeq,
     status: 'qa_pending',
     urls: processed,
   });
