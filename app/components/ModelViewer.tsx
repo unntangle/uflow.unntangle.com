@@ -156,18 +156,18 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     mv.setAttribute('camera-orbit', '45deg 75deg 120%');
     mv.setAttribute('shadow-intensity', '1');
     mv.setAttribute('exposure', '1');
-    // Bound how far the camera can travel on the zoom axis so the
-    // scroll / pinch zoom feels controlled in every dashboard that
-    // mounts this component (admin QA + client review both open the
-    // full-screen viewer that uses it). Radius percentages are
-    // relative to <model-viewer>'s auto-framing distance (100% = the
-    // default framed view):
-    //   min 25%  — closest zoom-in; keeps the camera a quarter of the
-    //              framing distance away so it can't push into the model
-    //   max 200% — furthest zoom-out; twice the framing distance
-    // Tweak these two numbers to loosen/tighten either end.
-    mv.setAttribute('min-camera-orbit', 'auto auto 25%');
-    mv.setAttribute('max-camera-orbit', 'auto auto 200%');
+    // Camera-orbit bounds, given as "theta phi radius":
+    //   phi 0deg..180deg — full vertical tilt so the underside (and
+    //     top) of the model can be inspected. model-viewer's default
+    //     "auto" clamps phi short of the poles, which is what blocked
+    //     the full bottom view.
+    //   radius 25%..200% — zoom range relative to the auto-framing
+    //     distance (100% = default framed view): 25% closest in,
+    //     200% furthest out.
+    //   theta is left unbounded (auto) for a full 360° horizontal spin.
+    // Tweak any of these to loosen/tighten that axis.
+    mv.setAttribute('min-camera-orbit', 'auto 0deg 25%');
+    mv.setAttribute('max-camera-orbit', 'auto 180deg 200%');
     mv.className = 'crm-model-viewer';
     mv.style.width = '100%';
     mv.style.height = cssHeight;
