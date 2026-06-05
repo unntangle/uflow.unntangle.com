@@ -14,9 +14,9 @@
 // the model's space.
 // ============================================================
 
-import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
-import ModelViewer from '../../../../components/ModelViewer';
+import { useEffect, useRef, useState } from 'react';
+import { RotateCcw, Ruler, X } from 'lucide-react';
+import ModelViewer, { type ModelViewerHandle } from '../../../../components/ModelViewer';
 
 export default function ModelViewerPage({
   name,
@@ -34,6 +34,11 @@ export default function ModelViewerPage({
   // page opens this via target="_blank"/window.open). We fall back
   // to history.back() for tabs the browser won't let us close.
   const [canClose, setCanClose] = useState(false);
+  // Handle to the viewer so the header's "Reset view" button can
+  // snap the camera back to the model's initial framing.
+  const viewerRef = useRef<ModelViewerHandle>(null);
+  // Dimensions + axis-gizmo overlay toggle. On by default.
+  const [showDims, setShowDims] = useState(true);
   useEffect(() => {
     // window.opener is set when this tab was opened by another tab,
     // which is the path we expect ("View model" link). Only then is
@@ -106,37 +111,95 @@ export default function ModelViewerPage({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={closeTab}
-          title={canClose ? 'Close (Esc)' : 'Back (Esc)'}
-          aria-label="Close viewer"
+        <div
           style={{
-            pointerEvents: 'auto',
-            display: 'inline-flex',
+            display: 'flex',
             alignItems: 'center',
-            gap: 6,
-            padding: '8px 12px',
-            background: 'rgba(255,255,255,0.9)',
-            border: '1px solid #d4d4d4',
-            borderRadius: 8,
-            color: '#0a0a0a',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: 'pointer',
+            gap: 8,
             flexShrink: 0,
+            pointerEvents: 'auto',
           }}
         >
-          <X size={14} strokeWidth={1.75} aria-hidden="true" />
-          <span>Close</span>
-        </button>
+          {glbUrl && (
+            <button
+              type="button"
+              onClick={() => setShowDims((v) => !v)}
+              title="Toggle dimensions & axis gizmo"
+              aria-pressed={showDims}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 12px',
+                background: showDims ? '#0a0a0a' : 'rgba(255,255,255,0.9)',
+                border: `1px solid ${showDims ? '#0a0a0a' : '#d4d4d4'}`,
+                borderRadius: 8,
+                color: showDims ? '#fff' : '#0a0a0a',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <Ruler size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span>Dimensions</span>
+            </button>
+          )}
+
+          {glbUrl && (
+            <button
+              type="button"
+              onClick={() => viewerRef.current?.resetView()}
+              title="Reset view"
+              aria-label="Reset view"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 12px',
+                background: 'rgba(255,255,255,0.9)',
+                border: '1px solid #d4d4d4',
+                borderRadius: 8,
+                color: '#0a0a0a',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span>Reset view</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={closeTab}
+            title={canClose ? 'Close (Esc)' : 'Back (Esc)'}
+            aria-label="Close viewer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '8px 12px',
+              background: 'rgba(255,255,255,0.9)',
+              border: '1px solid #d4d4d4',
+              borderRadius: 8,
+              color: '#0a0a0a',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            <X size={14} strokeWidth={1.75} aria-hidden="true" />
+            <span>Close</span>
+          </button>
+        </div>
       </div>
 
       {/* The model itself, filling the whole viewport. ModelViewer
           takes a CSS height string, so '100vh' makes it fill the
           window; its own background gradient matches the wrapper. */}
       {glbUrl ? (
-        <ModelViewer src={glbUrl} alt={`${name} 3D model`} height="100vh" />
+        <ModelViewer ref={viewerRef} src={glbUrl} alt={`${name} 3D model`} height="100vh" showDimensions={showDims} />
       ) : (
         <div
           style={{
