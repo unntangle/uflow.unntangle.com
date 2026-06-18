@@ -904,7 +904,7 @@ function ProjectTable({
                 {(p.approved_glb_url || p.glb_url) && (
                   <a
                     className="crm-link"
-                    href={p.approved_glb_url || p.glb_url!}
+                    href={crmPath(`/admin/qa/${p.id}/model`)}
                     target="_blank"
                     rel="noreferrer"
                   >

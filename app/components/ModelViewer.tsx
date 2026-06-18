@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
 // ============================================================
 // Wraps Google's <model-viewer> web component for GLB preview.
@@ -80,6 +80,13 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Loading feedback: `loaded` flips true on the model-viewer
+  // 'load' event (overlay fades out then unmounts); `progress`
+  // (0-100) is driven by model-viewer's 'progress' event so the
+  // user sees a determinate bar while the GLB downloads instead
+  // of a blank viewport.
+  const [loaded, setLoaded] = useState(false);
+  const [progress, setProgress] = useState(0);
   // Live handle to the created <model-viewer> element so the reset
   // button (a React sibling) can drive its camera imperatively.
   const mvRef = useRef<ModelViewerEl | null>(null);
@@ -134,6 +141,11 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     // the reset target is recaptured for the model we're about to show.
     homeOrbitRef.current = null;
 
+    // New src means a fresh download: show the loading overlay again
+    // from 0 until this model's 'load' fires.
+    setLoaded(false);
+    setProgress(0);
+
     // Inject the model-viewer script once per page.
     if (!document.querySelector('script[data-model-viewer]')) {
       const s = document.createElement('script');
@@ -149,6 +161,10 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     mv.setAttribute('src', src);
     mv.setAttribute('alt', alt || '3D model preview');
     mv.setAttribute('camera-controls', '');
+    // Start fetching the GLB immediately rather than waiting for the
+    // element to be considered "in viewport" — this viewer always
+    // fills the screen, so eager loading shaves the lazy-load delay.
+    mv.setAttribute('loading', 'eager');
     // Default to a three-quarter view (instead of model-viewer's
     // straight-on front) so all three dimension axes are separated
     // and their W/H/L tooltips are visible on load. Slightly zoomed
@@ -188,6 +204,20 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
 
     injectShadowStyle();
     mv.addEventListener('load', injectShadowStyle);
+
+    // Drive the loading overlay. 'progress' fires repeatedly with
+    // totalProgress 0..1 as the GLB downloads + parses; 'load' fires
+    // once when it's ready to render. We clamp to 100 on load so the
+    // bar always completes even if the last progress tick was <1.
+    mv.addEventListener('progress', (e) => {
+      const detail = (e as CustomEvent<{ totalProgress?: number }>).detail;
+      const pct = Math.round((detail?.totalProgress ?? 0) * 100);
+      setProgress(pct);
+    });
+    mv.addEventListener('load', () => {
+      setProgress(100);
+      setLoaded(true);
+    });
 
     // Capture the framed camera position the first time the model
     // loads; "Reset view" returns here. Stored in rad/m for an exact
@@ -331,7 +361,11 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     mv.addEventListener('load', setupDimensions);
     mv.addEventListener('camera-change', renderOverlay);
     // Handle a model that was already cached/loaded before this ran.
-    if ((mv as unknown as { loaded?: boolean }).loaded) setupDimensions();
+    if ((mv as unknown as { loaded?: boolean }).loaded) {
+      setupDimensions();
+      setProgress(100);
+      setLoaded(true);
+    }
 
     return () => {
       container.innerHTML = '';
@@ -341,7 +375,49 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     };
   }, [src, alt, cssHeight]);
 
-  return <div ref={containerRef} style={{ height: cssHeight }} />;
+  return (
+    <div style={{ position: 'relative', height: cssHeight }}>
+      <div ref={containerRef} style={{ height: cssHeight }} />
+
+      {/* Loading overlay. Visible until the model's 'load' event,
+          then fades out. Kept mounted during the fade (opacity
+          transition) and removed once fully loaded so it never
+          intercepts pointer events on the live model. The bar is
+          determinate while progress climbs, then completes on load. */}
+      {!loaded && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 14,
+            background: 'linear-gradient(180deg, #fafafa, #ededed)',
+            pointerEvents: 'none',
+            transition: 'opacity 0.4s ease',
+            opacity: progress >= 100 ? 0 : 1,
+          }}
+        >
+          <div style={{ width: 200, height: 4, background: '#e0e0e0', borderRadius: 4, overflow: 'hidden' }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${progress}%`,
+                background: '#0a0a0a',
+                borderRadius: 4,
+                transition: 'width 0.2s ease',
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: '#737373', letterSpacing: '0.02em' }}>
+            Loading 3D model… {progress}%
+          </div>
+        </div>
+      )}
+    </div>
+  );
 });
 
 export default ModelViewer;
