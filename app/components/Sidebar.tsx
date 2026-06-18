@@ -16,6 +16,8 @@ import {
   Folder,
   Inbox,
   List,
+  Download,
+  Images,
   ChevronRight,
   CheckCircle2,
   UserCircle,
@@ -205,7 +207,8 @@ export default function Sidebar({
     isOnAllocation ||
     isActive('/admin/jobs/list') ||
     isActive('/admin/jobs/new') ||
-    isActive('/admin/jobs/reassign');
+    isActive('/admin/jobs/reassign') ||
+    isActive('/admin/jobs/download');
   const [jobsOpen, setJobsOpen] = useState<boolean>(isOnJobsChild);
   useEffect(() => {
     try {
@@ -413,6 +416,15 @@ export default function Sidebar({
                     >
                       <Repeat size={14} strokeWidth={1.75} aria-hidden="true" />
                       <span>Reassign Job</span>
+                    </button>
+                    <button
+                      className={`crm-sidebar-link crm-sidebar-link-child ${
+                        isActive('/admin/jobs/download') ? 'is-active' : ''
+                      }`}
+                      onClick={() => router.push(crmPath('/admin/jobs/download'))}
+                    >
+                      <Download size={14} strokeWidth={1.75} aria-hidden="true" />
+                      <span>Download</span>
                     </button>
                   </div>
                 )}

@@ -7,7 +7,7 @@
 // protected route.
 //
 // Cookie name: 'crm_session'
-// Lifetime: 7 days
+// Lifetime: 12 hours
 // Signing: HS256 with CRM_SESSION_SECRET (any 32+ char string)
 // ============================================================
 
@@ -15,7 +15,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { cookies } from 'next/headers';
 
 const COOKIE_NAME = 'crm_session';
-const ONE_WEEK_SECONDS = 60 * 60 * 24 * 7;
+const TWELVE_HOURS_SECONDS = 60 * 60 * 12;
 
 export type SessionPayload = {
   userId: string;
@@ -46,7 +46,7 @@ export async function createSession(payload: SessionPayload): Promise<void> {
   const token = await new SignJWT({ ...payload })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime('7d')
+    .setExpirationTime('12h')
     .sign(getSecret());
 
   const jar = await cookies();
@@ -55,7 +55,7 @@ export async function createSession(payload: SessionPayload): Promise<void> {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    maxAge: ONE_WEEK_SECONDS,
+    maxAge: TWELVE_HOURS_SECONDS,
   });
 }
 
