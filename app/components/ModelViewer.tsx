@@ -210,7 +210,7 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     // once when it's ready to render. We clamp to 100 on load so the
     // bar always completes even if the last progress tick was <1.
     mv.addEventListener('progress', (e) => {
-      const detail = (e as CustomEvent<{ totalProgress?: number }>).detail;
+      const detail = (e as unknown as CustomEvent<{ totalProgress?: number }>).detail;
       const pct = Math.round((detail?.totalProgress ?? 0) * 100);
       setProgress(pct);
     });
