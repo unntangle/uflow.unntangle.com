@@ -389,9 +389,9 @@ export default function DownloadJobsPage({
                         busy={assetBusyFor('spp')}
                         error={assetErrFor('spp')}
                         onDownload={() =>
-                          downloadAsset(p, 'spp', !!p.spp_url, `${p.slug}.spp`)
+                          downloadAsset(p, 'spp', !!p.spp_url, `${p.slug}-spp.zip`)
                         }
-                        downloadTitle="Download SPP"
+                        downloadTitle="Download SPP folder (.zip)"
                       />
 
                       {/* ---- Source (complete .zip, download only) ---- */}

@@ -159,21 +159,7 @@ export async function GET(
   if (typeParam === 'fbx' && project.zip_url) {
     let outBuf: Buffer | null = null;
     try {
-      const srcBuf = await fetchFromUrl(project.zip_url);
-      const src = new AdmZip(srcBuf);
-      const out = new AdmZip();
-      let count = 0;
-      for (const e of src.getEntries()) {
-        if (e.isDirectory) continue;
-        // Match an `fbx/` path segment (root or wrapped) and keep
-        // everything from it onward: wrapper/fbx/tex/wood.png ->
-        // fbx/tex/wood.png. A folder like `myfbx/` won't match.
-        const m = e.entryName.match(/(?:^|\/)(fbx\/.+)$/i);
-        if (!m) continue;
-        out.addFile(m[1], e.getData());
-        count++;
-      }
-      if (count > 0) outBuf = out.toBuffer();
+      outBuf = await folderZipFromSource(project.zip_url, 'fbx');
     } catch (err) {
       console.error('[projects.download] fbx folder zip failed', err);
       return NextResponse.json(
@@ -194,6 +180,53 @@ export async function GET(
     }
     // count === 0: no fbx/ folder in the source zip — fall through
     // to the single-file path (404s if fbx_url is also empty).
+  }
+
+  // ----- SPP special-case: ALWAYS download an spp/ folder -----
+  // Mirrors FBX, but the .spp is never stored in a fixed folder
+  // (the extractor grabs the first .spp anywhere in the zip), so
+  // there's usually no spp/ folder to rebuild. We therefore:
+  //   1. Prefer the source zip's spp/ folder when the artist DID
+  //      bundle one (keeps any linked resources together), else
+  //   2. Wrap the lone stored .spp into a one-file spp/ zip,
+  // so the download is ALWAYS a folder (<slug>-spp.zip), never a
+  // bare .spp. Falls through to the 404 below only when the job
+  // has no .spp at all.
+  if (typeParam === 'spp' && project.spp_url) {
+    let outBuf: Buffer | null = null;
+    try {
+      // 1) Companions bundled under spp/ in the source zip.
+      if (project.zip_url) {
+        outBuf = await folderZipFromSource(project.zip_url, 'spp');
+      }
+      // 2) Fallback: wrap the single stored .spp on its own so the
+      //    result is still a folder, not a bare file.
+      if (!outBuf) {
+        const sppBuf = await fetchFromUrl(project.spp_url);
+        const sppName = baseNameFromUrl(
+          project.spp_url,
+          `${project.slug}.spp`
+        );
+        const out = new AdmZip();
+        out.addFile(`spp/${sppName}`, sppBuf);
+        outBuf = out.toBuffer();
+      }
+    } catch (err) {
+      console.error('[projects.download] spp folder zip failed', err);
+      return NextResponse.json(
+        { error: 'Could not build the SPP folder zip from storage.' },
+        { status: 502 }
+      );
+    }
+    return new NextResponse(new Uint8Array(outBuf), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${project.slug}-spp.zip"`,
+        'Content-Length': String(outBuf.length),
+        'Cache-Control': 'private, no-store',
+      },
+    });
   }
 
   const asset = ASSETS[typeParam as keyof typeof ASSETS];
@@ -227,4 +260,53 @@ export async function GET(
       'Cache-Control': 'private, no-store',
     },
   });
+}
+
+// ============================================================
+// folderZipFromSource — rebuild a zip of an extracted sub-folder
+// (fbx/ or spp/) from the artist's complete source zip.
+//
+// The extractor only stores the lone primary file, but the artist
+// may have bundled companions (textures, linked resources) under
+// that folder. The source zip always holds the full folder, so we
+// reconstruct it on the fly. We keep the path from the segment
+// part onward so the download contains a clean folder.
+//
+// Returns the zip Buffer, or null when the source has no such
+// folder (so the caller can decide how to fall back).
+// ============================================================
+async function folderZipFromSource(
+  zipUrl: string,
+  segment: 'fbx' | 'spp'
+): Promise<Buffer | null> {
+  const srcBuf = await fetchFromUrl(zipUrl);
+  const src = new AdmZip(srcBuf);
+  const out = new AdmZip();
+  // Match a `<segment>/` path part (root or wrapped) and keep
+  // everything from it onward: wrapper/spp/tex/wood.png ->
+  // spp/tex/wood.png. `.+` is greedy so it runs to the end of the
+  // entry name; a folder like `myspp/` won't match.
+  const re = new RegExp('(?:^|/)(' + segment + '/.+)', 'i');
+  let count = 0;
+  for (const e of src.getEntries()) {
+    if (e.isDirectory) continue;
+    const m = e.entryName.match(re);
+    if (!m) continue;
+    out.addFile(m[1], e.getData());
+    count++;
+  }
+  return count > 0 ? out.toBuffer() : null;
+}
+
+// Last path segment of a URL (decoded), sans query/hash, with a
+// fallback when the URL has no usable tail. Used to name the .spp
+// inside its folder zip the way the artist stored it.
+function baseNameFromUrl(url: string, fallback: string): string {
+  try {
+    const path = new URL(url).pathname;
+    const tail = decodeURIComponent(path.split('/').pop() || '');
+    return tail || fallback;
+  } catch {
+    return fallback;
+  }
 }
