@@ -1072,6 +1072,16 @@ function BriefModal({
 }
 
 // ============================================================
+// Upload size cap. R2 allows far larger single-PUT objects
+// (~5 GB), but we cap here to stay within the bucket's storage
+// budget and keep uploads quick. The artist's zip now bundles the
+// model formats AND the Substance source (.spp/.spsm) plus baked
+// texture maps, so 300 MB gives comfortable headroom.
+// ============================================================
+const MAX_UPLOAD_MB = 300;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+// ============================================================
 // Upload zip modal
 // ============================================================
 function UploadModal({
@@ -1088,8 +1098,101 @@ function UploadModal({
   const [err, setErr] = useState<string | null>(null);
   const [drag, setDrag] = useState(false);
   const [progress, setProgress] = useState<number>(0);
-  const [stage, setStage] = useState<'idle' | 'signing' | 'uploading' | 'finalizing'>('idle');
+  const [stage, setStage] = useState<'idle' | 'checking' | 'signing' | 'uploading' | 'finalizing'>('idle');
   const [, startTransition] = useTransition();
+
+  // Validate a chosen file before accepting it: must be a .zip and
+  // within the size cap. Rejections surface inline (via setErr) so
+  // the artist sees WHY nothing happened instead of a silent no-op.
+  function pickFile(f: File | undefined | null) {
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.zip')) {
+      setErr('Please choose a .zip file.');
+      return;
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      setErr(
+        `That zip is ${(f.size / 1024 / 1024).toFixed(0)} MB — the limit is ${MAX_UPLOAD_MB} MB. ` +
+          'Remove anything not needed (e.g. extra Substance autosaves) and re-zip.'
+      );
+      return;
+    }
+    setErr(null);
+    setFile(f);
+  }
+
+  // Gate the upload: confirm the zip is named <product>.zip, that
+  // every required folder holds its file, AND that each of those
+  // files follows the <product>.<ext> naming convention. Returns a
+  // specific error for the first problem found, or null when valid.
+  // Folder matching mirrors the server extractor (nested-folder
+  // tolerant, case-insensitive); textures inside fbx/ are not
+  // name-checked since their filenames legitimately vary.
+  async function validateZipStructure(f: File): Promise<string | null> {
+    // Product name = slug up to the first hyphen ("jupiter-chair"
+    // -> "jupiter"). Everything is compared lower-case so the
+    // artist isn't tripped up by capitalisation.
+    const product = project.slug.split('-')[0].toLowerCase();
+
+    // 1. Outer zip filename.
+    if (f.name.toLowerCase() !== product + '.zip') {
+      return (
+        'Upload blocked — the zip must be named "' + product + '.zip", but ' +
+        'yours is "' + f.name + '". Rename the zip and try again.'
+      );
+    }
+
+    // 2. Read entries.
+    let names: string[];
+    try {
+      const zip = await JSZip.loadAsync(f);
+      names = Object.keys(zip.files).filter((n) => !zip.files[n].dir);
+    } catch {
+      return 'Could not read that .zip — it may be corrupt. Try re-zipping.';
+    }
+
+    // basename of an entry path, lower-cased:
+    // "models/glb/Jupiter.glb" -> "jupiter.glb".
+    const baseOf = (n: string) => (n.split('/').pop() || n).toLowerCase();
+
+    // 3. Presence + naming for each required model/source file.
+    const need: { folder: string; ext: string }[] = [
+      { folder: 'fbx', ext: 'fbx' },
+      { folder: 'glb', ext: 'glb' },
+      { folder: 'gltf', ext: 'gltf' },
+      { folder: 'spp', ext: 'spp' },
+      { folder: 'spp', ext: 'spsm' },
+    ];
+
+    for (const req of need) {
+      const topSeg = req.folder + '/';
+      const folderSeg = '/' + req.folder + '/';
+      const dotExt = '.' + req.ext;
+      const wantName = product + dotExt;
+
+      const ofExt = names.filter((n) => {
+        const lower = n.toLowerCase();
+        const inFolder = lower.startsWith(topSeg) || lower.includes(folderSeg);
+        return inFolder && lower.endsWith(dotExt);
+      });
+
+      if (ofExt.length === 0) {
+        return (
+          'Upload blocked — missing ' + req.folder + '/' + wantName +
+          '. Every folder must contain its file. Add it and re-zip.'
+        );
+      }
+
+      if (!ofExt.some((n) => baseOf(n) === wantName)) {
+        return (
+          'Upload blocked — ' + req.folder + '/ has "' + baseOf(ofExt[0]) +
+          '" but it must be named "' + wantName + '". Rename it and re-zip.'
+        );
+      }
+    }
+
+    return null;
+  }
 
   async function submit() {
     if (!file) return;
@@ -1098,6 +1201,16 @@ function UploadModal({
     setProgress(0);
 
     try {
+      // Structure gate: block the upload entirely if any required
+      // folder/file is absent. This is what makes "upload will not
+      // happen without it" true — we return before signing/PUT.
+      setStage('checking');
+      const structErr = await validateZipStructure(file);
+      if (structErr) {
+        setErr(structErr);
+        return;
+      }
+
       setStage('signing');
       const signRes = await crmFetch(
         `/api/projects/${project.id}/upload-sign`,
@@ -1150,6 +1263,7 @@ function UploadModal({
   }
 
   const stageLabel =
+    stage === 'checking'   ? 'Checking zip…' :
     stage === 'signing'    ? 'Preparing…' :
     stage === 'uploading'  ? `Uploading… ${progress}%` :
     stage === 'finalizing' ? 'Extracting zip (may take a minute)…' :
@@ -1178,8 +1292,7 @@ function UploadModal({
           onDrop={(e) => {
             e.preventDefault();
             setDrag(false);
-            const f = e.dataTransfer.files[0];
-            if (f && f.name.toLowerCase().endsWith('.zip')) setFile(f);
+            pickFile(e.dataTransfer.files[0]);
           }}
           onClick={() => document.getElementById('zip-input')?.click()}
         >
@@ -1189,8 +1302,7 @@ function UploadModal({
             accept=".zip"
             style={{ display: 'none' }}
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) setFile(f);
+              pickFile(e.target.files?.[0]);
             }}
           />
           {file ? (
@@ -1204,13 +1316,13 @@ function UploadModal({
             <>
               <strong>Click or drop your .zip file</strong>
               <div className="crm-dropzone-hint">
-                Must contain folders: <code>fbx/</code> <code>glb/</code> <code>gltf/</code>
-                <br />
-                Max 90 MB.
+                Max {MAX_UPLOAD_MB} MB · see the required structure below
               </div>
             </>
           )}
         </div>
+
+        <UploadGuide zipName={`${project.slug.split('-')[0]}.zip`} />
 
         {busy && stage === 'uploading' && (
           <div
@@ -1242,6 +1354,111 @@ function UploadModal({
           <button className="crm-btn" onClick={submit} disabled={!file || busy}>
             {busy ? stageLabel : 'Submit for QA'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// UploadGuide — the visual the artist sees before picking a file.
+// Shows the required .zip folder structure plus a notice that every
+// folder + file is mandatory. The actual enforcement lives in the
+// modal's submit() (validateZipStructure); this is presentational.
+// ============================================================
+function UploadGuide({ zipName }: { zipName: string }) {
+  const rows: { folder: string; holds: string; required?: boolean }[] = [
+    { folder: 'fbx/', holds: '.fbx + texture map images (.png / .jpg)', required: true },
+    { folder: 'glb/', holds: '.glb', required: true },
+    { folder: 'gltf/', holds: '.gltf', required: true },
+    { folder: 'spp/', holds: '.spp + .spsm  (Substance source)', required: true },
+  ];
+
+  // Product base for the example filenames, e.g. "jupiter.zip" -> "jupiter".
+  const base = zipName.slice(0, -4);
+
+  return (
+    <div
+      style={{
+        marginTop: 14,
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        background: 'var(--surface)',
+        overflow: 'hidden',
+      }}
+    >
+      {/* ---- Required structure ---- */}
+      <div style={{ padding: '12px 14px' }}>
+        <div
+          style={{
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            color: 'var(--text-dim)',
+            marginBottom: 10,
+          }}
+        >
+          Required .zip structure
+        </div>
+
+        <div
+          style={{
+            fontFamily: 'var(--crm-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+            fontSize: 13,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span aria-hidden>📦</span>
+            <strong>{zipName}</strong>
+          </div>
+          {rows.map((r, i) => {
+            const last = i === rows.length - 1;
+            return (
+              <div
+                key={r.folder}
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 8,
+                  padding: '3px 0',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span style={{ color: 'var(--text-faint)' }}>{last ? '└─' : '├─'}</span>
+                <span aria-hidden>📁</span>
+                <code style={{ fontWeight: 600 }}>{r.folder}</code>
+                <span style={{ color: 'var(--text-dim)' }}>{r.holds}</span>
+                {r.required && (
+                  <span
+                    className="crm-badge crm-badge-pending"
+                    style={{ fontSize: 10, padding: '1px 6px' }}
+                  >
+                    required
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div
+          style={{
+            margin: '12px 0 0',
+            padding: '8px 10px',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            background: 'var(--surface-2)',
+            fontSize: 12,
+            color: 'var(--text-dim)',
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ color: 'var(--danger)' }}>Required:</strong> name the
+          zip <code>{zipName}</code>, and name every file after the product —{' '}
+          <code>{base}.fbx</code>, <code>{base}.glb</code>, <code>{base}.gltf</code>,{' '}
+          <code>{base}.spp</code> and <code>{base}.spsm</code>, each inside its
+          folder. If anything is missing or misnamed, the upload is blocked. Max{' '}
+          {MAX_UPLOAD_MB} MB total.
         </div>
       </div>
     </div>

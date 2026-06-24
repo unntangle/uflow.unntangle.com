@@ -314,3 +314,34 @@ export async function deleteByPrefix(prefix: string): Promise<number> {
   }
   return deleted;
 }
+
+// ============================================================
+// Delete a specific set of object keys (NOT a whole prefix).
+// ============================================================
+// Used to prune superseded model files after a cache-busted
+// re-upload: the GLB gets a fresh "_N" filename every upload, so
+// without this the previous Name_(N-1).glb would linger in the
+// bucket forever. Unlike deleteByPrefix this only removes the
+// exact keys handed in, so the just-uploaded files are never at
+// risk. No-ops on an empty list. Batches in groups of 1000 (the
+// S3 DeleteObjects limit).
+export async function deleteKeys(keys: string[]): Promise<number> {
+  const clean = keys
+    .map((k) => k.replace(/^\/+/, ''))
+    .filter((k) => k.trim().length > 0);
+  if (clean.length === 0) return 0;
+  const e = env();
+  let deleted = 0;
+  for (let i = 0; i < clean.length; i += 1000) {
+    const batch = clean.slice(i, i + 1000);
+    if (batch.length === 0) continue;
+    await client().send(
+      new DeleteObjectsCommand({
+        Bucket: e.bucket,
+        Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+      })
+    );
+    deleted += batch.length;
+  }
+  return deleted;
+}

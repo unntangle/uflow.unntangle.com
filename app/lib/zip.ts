@@ -25,6 +25,8 @@ import {
   uploadKey,
   fetchFromUrl,
   publicUrlFor,
+  listKeysByPrefix,
+  deleteKeys,
 } from './r2';
 
 export type ProcessedUpload = {
@@ -139,27 +141,71 @@ async function extractAndUpload(
   const fbxFile = fbxEntry ? baseName(fbxEntry.entryName) : null;
   const gltfFile = gltfEntry ? baseName(gltfEntry.entryName) : null;
 
+  // Resolve the exact keys up front so we can (a) upload to them
+  // and (b) know precisely which keys to KEEP when pruning below.
+  const glbKey = uploadKey(clientSlug, projectSlug, revision, `glb/${glbFile}`);
+  const fbxKey = fbxFile
+    ? uploadKey(clientSlug, projectSlug, revision, `fbx/${fbxFile}`)
+    : null;
+  const gltfKey = gltfFile
+    ? uploadKey(clientSlug, projectSlug, revision, `gltf/${gltfFile}`)
+    : null;
+
   const [glb, fbx, gltf] = await Promise.all([
     uploadBuffer({
-      key: uploadKey(clientSlug, projectSlug, revision, `glb/${glbFile}`),
+      key: glbKey,
       body: glbEntry.getData(),
       contentType: contentTypeFor(glbFile),
     }),
-    fbxEntry && fbxFile
+    fbxEntry && fbxKey
       ? uploadBuffer({
-          key: uploadKey(clientSlug, projectSlug, revision, `fbx/${fbxFile}`),
+          key: fbxKey,
           body: fbxEntry.getData(),
-          contentType: contentTypeFor(fbxFile),
+          contentType: contentTypeFor(fbxFile!),
         })
       : Promise.resolve(null),
-    gltfEntry && gltfFile
+    gltfEntry && gltfKey
       ? uploadBuffer({
-          key: uploadKey(clientSlug, projectSlug, revision, `gltf/${gltfFile}`),
+          key: gltfKey,
           body: gltfEntry.getData(),
-          contentType: contentTypeFor(gltfFile),
+          contentType: contentTypeFor(gltfFile!),
         })
       : Promise.resolve(null),
   ]);
+
+  // ----- 4. Prune superseded model files -----
+  // The GLB cache-busting suffix means every re-upload writes a
+  // BRAND-NEW glb key, and a renamed model can also leave a stale
+  // fbx/gltf behind. Left alone these orphans accumulate in R2
+  // forever (storage bloat). So after the new files are safely
+  // up, we list this revision's model subfolders and delete every
+  // glb/fbx/gltf object that ISN'T one we just wrote.
+  //
+  // Scope is deliberately tight:
+  //   - Only keys under uploads/rev-N/{glb,fbx,gltf}/ are touched.
+  //   - source.zip (at rev-N/ root) is never matched, so the
+  //     source of truth for re-extraction survives.
+  //   - Other revision folders and the approved/ copy are never
+  //     touched.
+  //
+  // Best-effort: a prune failure must NOT fail the upload — the
+  // new model is already live and the DB will point at it. Worst
+  // case is leftover storage, which the next upload re-attempts.
+  try {
+    const keep = new Set(
+      [glbKey, fbxKey, gltfKey].filter((k): k is string => Boolean(k))
+    );
+    const revPrefix = uploadKey(clientSlug, projectSlug, revision, '');
+    const existing = await listKeysByPrefix(revPrefix);
+    const stale = existing.filter(
+      (k) => /\/(glb|fbx|gltf)\//i.test(k) && !keep.has(k)
+    );
+    if (stale.length > 0) {
+      await deleteKeys(stale);
+    }
+  } catch (err) {
+    console.error('[zip] superseded-file prune failed (non-fatal)', err);
+  }
 
   return {
     glbUrl: glb.publicUrl,
