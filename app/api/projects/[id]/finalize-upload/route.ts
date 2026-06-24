@@ -137,6 +137,7 @@ export async function POST(
       glb_url: processed.glbUrl,
       fbx_url: processed.fbxUrl,
       gltf_url: processed.gltfUrl,
+      spp_url: processed.sppUrl,
       updated_at: new Date().toISOString(),
     })
     .eq('id', id);

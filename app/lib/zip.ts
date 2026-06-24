@@ -36,6 +36,7 @@ export type ProcessedUpload = {
   glbUrl: string | null;
   fbxUrl: string | null;
   gltfUrl: string | null;
+  sppUrl: string | null;
 };
 
 // "glb/Jupiter.glb" → "Jupiter.glb"
@@ -124,6 +125,14 @@ async function extractAndUpload(
   const fbxEntry = findInFolder('fbx', 'fbx');
   const gltfEntry = findInFolder('gltf', 'gltf');
 
+  // SPP (Substance Painter project) — artists may include the
+  // source .spp so QA/admin can re-open the texturing project.
+  // Unlike glb/fbx/gltf it isn't expected in a fixed subfolder,
+  // so we match the first .spp found anywhere in the zip.
+  const sppEntry = entries.find(
+    (e) => !e.isDirectory && /\.spp$/i.test(e.entryName)
+  );
+
   if (!glbEntry) {
     // GLB is the only one we strictly require because QA
     // previews it. FBX/GLTF are nice-to-have.
@@ -140,6 +149,7 @@ async function extractAndUpload(
   const glbFile = withSeq(baseName(glbEntry.entryName), uploadSeq);
   const fbxFile = fbxEntry ? baseName(fbxEntry.entryName) : null;
   const gltfFile = gltfEntry ? baseName(gltfEntry.entryName) : null;
+  const sppFile = sppEntry ? baseName(sppEntry.entryName) : null;
 
   // Resolve the exact keys up front so we can (a) upload to them
   // and (b) know precisely which keys to KEEP when pruning below.
@@ -150,8 +160,11 @@ async function extractAndUpload(
   const gltfKey = gltfFile
     ? uploadKey(clientSlug, projectSlug, revision, `gltf/${gltfFile}`)
     : null;
+  const sppKey = sppFile
+    ? uploadKey(clientSlug, projectSlug, revision, `spp/${sppFile}`)
+    : null;
 
-  const [glb, fbx, gltf] = await Promise.all([
+  const [glb, fbx, gltf, spp] = await Promise.all([
     uploadBuffer({
       key: glbKey,
       body: glbEntry.getData(),
@@ -169,6 +182,15 @@ async function extractAndUpload(
           key: gltfKey,
           body: gltfEntry.getData(),
           contentType: contentTypeFor(gltfFile!),
+        })
+      : Promise.resolve(null),
+    sppEntry && sppKey
+      ? uploadBuffer({
+          key: sppKey,
+          body: sppEntry.getData(),
+          // .spp is an opaque binary blob to us; octet-stream is
+          // the right neutral type for a forced download.
+          contentType: 'application/octet-stream',
         })
       : Promise.resolve(null),
   ]);
@@ -193,12 +215,12 @@ async function extractAndUpload(
   // case is leftover storage, which the next upload re-attempts.
   try {
     const keep = new Set(
-      [glbKey, fbxKey, gltfKey].filter((k): k is string => Boolean(k))
+      [glbKey, fbxKey, gltfKey, sppKey].filter((k): k is string => Boolean(k))
     );
     const revPrefix = uploadKey(clientSlug, projectSlug, revision, '');
     const existing = await listKeysByPrefix(revPrefix);
     const stale = existing.filter(
-      (k) => /\/(glb|fbx|gltf)\//i.test(k) && !keep.has(k)
+      (k) => /\/(glb|fbx|gltf|spp)\//i.test(k) && !keep.has(k)
     );
     if (stale.length > 0) {
       await deleteKeys(stale);
@@ -211,6 +233,7 @@ async function extractAndUpload(
     glbUrl: glb.publicUrl,
     fbxUrl: fbx?.publicUrl ?? null,
     gltfUrl: gltf?.publicUrl ?? null,
+    sppUrl: spp?.publicUrl ?? null,
   };
 }
 

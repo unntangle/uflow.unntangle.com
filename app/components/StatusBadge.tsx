@@ -25,7 +25,7 @@ export default function StatusBadge({
     return <span className="crm-badge crm-badge-draft">YTA</span>;
   }
   if (status === 'qa_pending') {
-    return <span className="crm-badge crm-badge-pending">QA Pending</span>;
+    return <span className="crm-badge crm-badge-pending">IQA</span>;
   }
   if (status === 'iqa_rejected') {
     // Admin sent the artist back for revision. The Revision column
@@ -68,7 +68,7 @@ export default function StatusBadge({
     // their queue. Clients see this as "awaiting your review".
     return (
       <span className="crm-badge crm-badge-client-review">
-        Client Review
+        EQA
       </span>
     );
   }

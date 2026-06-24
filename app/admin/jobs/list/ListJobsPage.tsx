@@ -183,7 +183,7 @@ export default function ListJobsPage({
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
                   <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
                   <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
-                  <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
+                  <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
@@ -211,7 +211,14 @@ export default function ListJobsPage({
                       {new Date(p.created_at).toLocaleDateString()}
                     </td>
                     <td style={{ color: 'var(--text-dim)' }}>
-                      {new Date(p.updated_at).toLocaleDateString()}
+                      {new Date(p.updated_at).toLocaleString(undefined, {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true,
+                      })}
                     </td>
                     <td>
                       {/* Pass `assigned` so a draft row renders YTS

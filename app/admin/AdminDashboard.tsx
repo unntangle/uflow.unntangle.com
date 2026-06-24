@@ -831,7 +831,7 @@ function ProjectTable({
             <SortableTh label="Revision" sortKey="revision" sort={sort} onSort={onSort} />
           )}
           <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
-          <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
+          <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
           {meta.showAsset && <th>Asset</th>}
           <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
           {hasAction && <th>Action</th>}
@@ -898,7 +898,7 @@ function ProjectTable({
               </td>
             )}
             <DateCell value={p.created_at} />
-            <DateCell value={p.updated_at} />
+            <DateCell value={p.updated_at} withTime />
             {meta.showAsset && (
               <td>
                 {(p.approved_glb_url || p.glb_url) && (
@@ -1001,24 +1001,44 @@ function EmptyMini({ message }: { message: string }) {
   );
 }
 
-// Format a date string as DD/MM/YYYY for table cells. Returns an
-// em-dash when the value is missing so the column still shows a
-// placeholder instead of collapsing.
-function fmtDate(iso: string | null | undefined): string {
+// Format a date string for table cells. Date-only by default; pass
+// withTime to include the time (used by the "Uploaded" column).
+// Returns an em-dash when the value is missing so the column still
+// shows a placeholder instead of collapsing.
+function fmtDate(
+  iso: string | null | undefined,
+  withTime = false
+): string {
   if (!iso) return '\u2014';
-  return new Date(iso).toLocaleDateString();
+  const d = new Date(iso);
+  return withTime
+    ? d.toLocaleString(undefined, {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })
+    : d.toLocaleDateString();
 }
 
 // Reusable date cell. The em-dash version (no value tracked) is
 // styled dimmer so the columns with real data lead the eye.
-function DateCell({ value }: { value: string | null | undefined }) {
+function DateCell({
+  value,
+  withTime,
+}: {
+  value: string | null | undefined;
+  withTime?: boolean;
+}) {
   if (!value) {
     return (
       <td style={{ color: 'var(--text-faint)' }}>—</td>
     );
   }
   return (
-    <td style={{ color: 'var(--text-dim)' }}>{fmtDate(value)}</td>
+    <td style={{ color: 'var(--text-dim)' }}>{fmtDate(value, withTime)}</td>
   );
 }
 

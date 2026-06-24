@@ -30,6 +30,10 @@ type Project = {
   revision_count: number;
   assigned_to: string | null;
   glb_url: string | null;
+  fbx_url: string | null;
+  gltf_url: string | null;
+  zip_url: string | null;
+  spp_url: string | null;
   approved_glb_url: string | null;
   created_at: string;
   updated_at: string;
@@ -37,6 +41,9 @@ type Project = {
   client: { slug: string; name: string };
   assignee: { id: string; name: string; email: string } | null;
   references: Reference[];
+  // Distinct rejection rounds, computed server-side.
+  iqa_count: number; // admin / internal QA rejections
+  eqa_count: number; // client / external QA rejections
 };
 
 // ============================================================
@@ -73,10 +80,14 @@ export default function DownloadJobsPage({
   // Independent per-row pending/error state for the two download
   // actions, so zipping references doesn't disable the GLB button
   // (or vice-versa) and an error sticks to the action that raised it.
-  const [glbBusyId, setGlbBusyId] = useState<string | null>(null);
-  const [glbErr, setGlbErr] = useState<{ id: string; message: string } | null>(
-    null
-  );
+  // Generic per-asset download state, keyed by `${projectId}:${type}`
+  // so each of the GLB / FBX / SPP / Source buttons tracks its own
+  // pending + error independently (zipping references is separate).
+  const [assetBusy, setAssetBusy] = useState<string | null>(null);
+  const [assetErr, setAssetErr] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
   const [refBusyId, setRefBusyId] = useState<string | null>(null);
   const [refErr, setRefErr] = useState<{ id: string; message: string } | null>(
     null
@@ -99,35 +110,53 @@ export default function DownloadJobsPage({
     );
   }
 
-  // ---- Download the GLB through our proxy endpoint (forces a
-  // real file save, resolves the latest revision server-side).
-  async function downloadGlb(p: Project) {
-    if (!p.glb_url || glbBusyId) return;
-    setGlbBusyId(p.id);
-    setGlbErr(null);
+  // ---- Download a server-proxied asset (GLB / FBX / SPP / Source
+  // zip) through our endpoint. The server resolves the latest URL
+  // for the requested type and streams it with a clean filename.
+  async function downloadAsset(
+    p: Project,
+    type: 'glb' | 'fbx' | 'spp' | 'zip',
+    present: boolean,
+    filename: string
+  ) {
+    const key = `${p.id}:${type}`;
+    if (!present || assetBusy) return;
+    setAssetBusy(key);
+    setAssetErr(null);
     try {
-      const res = await crmFetch(`/api/projects/${p.id}/download`);
+      const res = await crmFetch(
+        `/api/projects/${p.id}/download?type=${type}`
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setGlbErr({
-          id: p.id,
+        setAssetErr({
+          key,
           message: data?.error || `Download failed (${res.status}).`,
         });
         return;
       }
       const blob = await res.blob();
+      // Honor the server's filename when it sets one (FBX comes back
+      // as a <slug>-fbx.zip folder, not a single .fbx), falling back
+      // to the requested name for everything else.
+      const cd = res.headers.get('content-disposition') || '';
+      const cdMatch = cd.match(/filename="?([^";]+)"?/i);
+      const saveName = cdMatch ? cdMatch[1] : filename;
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${p.slug}.glb`;
+      a.download = saveName;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setGlbErr({ id: p.id, message: (err as Error).message || 'Network error.' });
+      setAssetErr({
+        key,
+        message: (err as Error).message || 'Network error.',
+      });
     } finally {
-      setGlbBusyId(null);
+      setAssetBusy(null);
     }
   }
 
@@ -225,8 +254,9 @@ export default function DownloadJobsPage({
             <div>
               <h1 className="crm-page-title">Download Jobs</h1>
               <p className="crm-page-sub">
-                View or download each job&rsquo;s 3D model and reference
-                images. A dash means that asset isn&rsquo;t available yet.
+                View or download each job&rsquo;s model files (GLB, FBX, SPP),
+                source zip and reference images, plus its IQA/EQA revision
+                counts. A dash means that asset isn&rsquo;t available yet.
               </p>
             </div>
           </header>
@@ -251,22 +281,28 @@ export default function DownloadJobsPage({
               }
             />
           ) : (
-            <table className="crm-table">
+            <table className="crm-table" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead>
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
-                  <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
-                  <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
-                  <SortableTh label="Updated" sortKey="updated" sort={sort} onSort={onSort} />
+                  <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
+                  <th style={thCenter}>IQA</th>
+                  <th style={thCenter}>EQA</th>
                   <th style={thCenter}>GLB</th>
+                  <th style={thCenter}>FBX</th>
+                  <th style={thCenter}>SPP</th>
+                  <th style={thCenter}>Source</th>
                   <th style={thCenter}>Reference</th>
                 </tr>
               </thead>
               <tbody>
                 {sorted.map((p) => {
-                  const glbError = glbErr?.id === p.id ? glbErr.message : null;
+                  const assetErrFor = (type: string) =>
+                    assetErr?.key === `${p.id}:${type}` ? assetErr.message : null;
+                  const assetBusyFor = (type: string) =>
+                    assetBusy === `${p.id}:${type}`;
                   const refError = refErr?.id === p.id ? refErr.message : null;
                   return (
                     <tr key={p.id}>
@@ -285,12 +321,15 @@ export default function DownloadJobsPage({
                           </em>
                         )}
                       </td>
-                      <td>{p.client.name}</td>
                       <td style={{ color: 'var(--text-dim)' }}>
-                        {new Date(p.created_at).toLocaleDateString()}
-                      </td>
-                      <td style={{ color: 'var(--text-dim)' }}>
-                        {new Date(p.updated_at).toLocaleDateString()}
+                        {new Date(p.updated_at).toLocaleString(undefined, {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                          hour12: true,
+                        })}
                       </td>
                       <td>
                         <StatusBadge
@@ -300,15 +339,75 @@ export default function DownloadJobsPage({
                         />
                       </td>
 
+                      {/* ---- IQA rejection rounds ---- */}
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <span
+                          style={revPill}
+                          title="IQA — internal / admin rejection rounds"
+                        >
+                          {p.iqa_count}
+                        </span>
+                      </td>
+
+                      {/* ---- EQA rejection rounds ---- */}
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <span
+                          style={revPill}
+                          title="EQA — external / client rejection rounds"
+                        >
+                          {p.eqa_count}
+                        </span>
+                      </td>
+
                       {/* ---- GLB (3D model) ---- */}
                       <AssetCell
                         present={!!p.glb_url}
-                        busy={glbBusyId === p.id}
-                        error={glbError}
+                        busy={assetBusyFor('glb')}
+                        error={assetErrFor('glb')}
                         onView={() => viewGlb(p)}
-                        onDownload={() => downloadGlb(p)}
+                        onDownload={() =>
+                          downloadAsset(p, 'glb', !!p.glb_url, `${p.slug}.glb`)
+                        }
                         viewTitle="View 3D model"
                         downloadTitle="Download GLB"
+                      />
+
+                      {/* ---- FBX (download only) ---- */}
+                      <AssetCell
+                        present={!!p.fbx_url}
+                        busy={assetBusyFor('fbx')}
+                        error={assetErrFor('fbx')}
+                        onDownload={() =>
+                          downloadAsset(p, 'fbx', !!p.fbx_url, `${p.slug}.fbx`)
+                        }
+                        downloadTitle="Download FBX folder (.zip)"
+                      />
+
+                      {/* ---- SPP (Substance Painter, download only) ---- */}
+                      <AssetCell
+                        present={!!p.spp_url}
+                        busy={assetBusyFor('spp')}
+                        error={assetErrFor('spp')}
+                        onDownload={() =>
+                          downloadAsset(p, 'spp', !!p.spp_url, `${p.slug}.spp`)
+                        }
+                        downloadTitle="Download SPP"
+                      />
+
+                      {/* ---- Source (complete .zip, download only) ---- */}
+                      <AssetCell
+                        present={!!p.zip_url}
+                        busy={assetBusyFor('zip')}
+                        error={assetErrFor('zip')}
+                        onDownload={() =>
+                          downloadAsset(
+                            p,
+                            'zip',
+                            !!p.zip_url,
+                            `${p.slug}-source.zip`
+                          )
+                        }
+                        downloadTitle="Download source (.zip)"
                       />
 
                       {/* ---- Reference images ---- */}
@@ -350,25 +449,27 @@ function AssetCell({
   present: boolean;
   busy: boolean;
   error: string | null;
-  onView: () => void;
+  onView?: () => void;
   onDownload: () => void;
-  viewTitle: string;
+  viewTitle?: string;
   downloadTitle: string;
 }) {
   return (
     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
       {present ? (
         <span style={iconRow}>
-          <button
-            type="button"
-            className="crm-btn crm-btn-ghost crm-btn-icon"
-            style={iconBtn}
-            onClick={onView}
-            title={viewTitle}
-            aria-label={viewTitle}
-          >
-            <Eye size={15} strokeWidth={1.75} />
-          </button>
+          {onView && (
+            <button
+              type="button"
+              className="crm-btn crm-btn-ghost crm-btn-icon"
+              style={iconBtn}
+              onClick={onView}
+              title={viewTitle}
+              aria-label={viewTitle}
+            >
+              <Eye size={15} strokeWidth={1.75} />
+            </button>
+          )}
           <button
             type="button"
             className="crm-btn crm-btn-ghost crm-btn-icon"
@@ -402,6 +503,15 @@ const iconRow: CSSProperties = {
 const iconBtn: CSSProperties = { padding: '4px 6px' };
 const muted: CSSProperties = { color: 'var(--text-faint)' };
 const errStyle: CSSProperties = { color: '#dc2626', fontSize: 11, marginTop: 2 };
+const revPill: CSSProperties = {
+  display: 'inline-block',
+  minWidth: 18,
+  padding: '1px 6px',
+  borderRadius: 999,
+  background: 'var(--surface-2, rgba(0,0,0,0.05))',
+  fontVariantNumeric: 'tabular-nums',
+  fontSize: 12,
+};
 
 // ============================================================
 // Helpers
