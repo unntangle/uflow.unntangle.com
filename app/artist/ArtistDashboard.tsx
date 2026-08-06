@@ -1388,29 +1388,46 @@ function UploadModal({
     status: string;
     is_primary: boolean;
   };
-  const [variants, setVariants] = useState<UploadVariant[] | null>(null);
-  const [variantId, setVariantId] = useState<string | null>(null);
+  // Seeded from the project the dashboard already loaded, so the
+  // chooser is present on first paint. It used to fetch on mount,
+  // which meant a visible delay before the control appeared and a
+  // layout shift once it did — the data was already in memory.
+  //
+  // Approved colourways are excluded: they're finished, and the
+  // upload endpoints would reject them.
+  const openVariants = (project.variants ?? []).filter(
+    (v) => v.status !== 'approved'
+  );
+  const [variants, setVariants] = useState<UploadVariant[] | null>(
+    openVariants
+  );
+  const [variantId, setVariantId] = useState<string | null>(
+    openVariants[0]?.id ?? null
+  );
 
   useEffect(() => {
+    // Background refresh only. The seed above covers the render;
+    // this catches a colourway added by an admin since the page
+    // was last loaded. Never sets state back to null, so it can't
+    // make the chooser disappear mid-session.
     let cancelled = false;
     crmFetch(`/api/projects/${project.id}/variants`)
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
         const list: UploadVariant[] = d.variants ?? [];
-        // Approved colourways are finished — don't offer them as
-        // an upload target; the endpoints would reject them.
         const open = list.filter((v) => v.status !== 'approved');
+        if (open.length === 0) return;
         setVariants(open);
-        setVariantId(open[0]?.id ?? null);
+        // Keep the artist's current selection if it still exists,
+        // so a refresh landing mid-interaction doesn't silently
+        // retarget the upload.
+        setVariantId((prev) =>
+          prev && open.some((v) => v.id === prev) ? prev : open[0].id
+        );
       })
       .catch(() => {
-        // No variants endpoint / table yet — fall back to the
-        // legacy single-model upload, which omits variant_id.
-        if (!cancelled) {
-          setVariants([]);
-          setVariantId(null);
-        }
+        // Seeded data stands; nothing to do.
       });
     return () => {
       cancelled = true;
