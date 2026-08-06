@@ -52,6 +52,10 @@ export async function POST(req: NextRequest) {
     assigned_to?: string;
     brief?: string;
     reference_image_urls?: unknown;
+    // Optional colourway names supplied at creation time, e.g.
+    // ['Grey', 'Navy']. The product always gets a primary variant
+    // regardless; these are added alongside it.
+    variants?: unknown;
   };
   try {
     body = await req.json();
@@ -176,6 +180,87 @@ export async function POST(req: NextRequest) {
   // The returned row carries the actual stored slug (possibly
   // suffixed), so the client sees what it got without needing to
   // know we did anything special server-side.
+
+  // ----- Primary variant + any colourways named at creation -----
+  // Every product carries at least one variant row: per the
+  // 2026-08-06 variants migration, uflow_project_variants is the
+  // authoritative holder of per-model state. The migration
+  // backfilled existing rows; new projects get theirs here, or
+  // they'd be created with none and the QA switcher would have
+  // nothing to show.
+  //
+  // Extra variants inherit the same artist as the primary, which
+  // is the documented default when adding one later from the job
+  // row. All of them start in 'draft' with no asset URLs — the
+  // artist uploads a separate zip per variant.
+  const rawVariants = Array.isArray(body.variants) ? body.variants : [];
+  const extraNames = rawVariants
+    .filter((v): v is string => typeof v === 'string')
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+  const slugifyVariant = (raw: string) =>
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+  const variantRows: {
+    project_id: string;
+    name: string;
+    slug: string;
+    status: string;
+    assigned_to: string | null;
+    is_primary: boolean;
+    position: number;
+    created_by: string;
+  }[] = [
+    {
+      project_id: data.id,
+      name: 'Original',
+      slug: 'original',
+      status: 'draft',
+      assigned_to: assigned_to ?? null,
+      is_primary: true,
+      position: 0,
+      created_by: auth.userId,
+    },
+  ];
+
+  // De-dupe by slug so "Grey" and "grey" don't collide against the
+  // (project_id, slug) unique index, and so a stray duplicate in
+  // the payload doesn't fail the whole insert.
+  const seenSlugs = new Set(['original']);
+  for (const rawName of extraNames) {
+    const vSlug = slugifyVariant(rawName);
+    if (!vSlug || seenSlugs.has(vSlug)) continue;
+    seenSlugs.add(vSlug);
+    variantRows.push({
+      project_id: data.id,
+      name: rawName,
+      slug: vSlug,
+      status: 'draft',
+      assigned_to: assigned_to ?? null,
+      is_primary: false,
+      position: variantRows.length,
+      created_by: auth.userId,
+    });
+  }
+
+  const { error: vErr } = await supabase()
+    .from('uflow_project_variants')
+    .insert(variantRows);
+  if (vErr) {
+    console.error('[projects.create.variants]', vErr);
+    // The project row exists and is usable on the legacy
+    // single-model path, so we don't fail the request — but the
+    // admin needs to know the colourways didn't land.
+    return NextResponse.json({
+      project: data,
+      warning:
+        'Project created, but its variants could not be set up. Add them from the job row.',
+    });
+  }
 
   // Persist any reference image URLs the client uploaded before
   // calling this endpoint. We validate that each URL is from our

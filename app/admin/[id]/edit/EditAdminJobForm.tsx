@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
@@ -22,6 +22,19 @@ type ProjectLite = {
 // user can mark it for removal (toggling its id into
 // removedRefIds) but can't change its URL.
 type ExistingRef = { id: string; image_url: string };
+
+// A colourway of this product, as returned by
+// GET /api/projects/:id/variants. Each runs its own QA cycle, so
+// it carries its own status and revision count.
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: ProjectStatus;
+  revision_count: number;
+  is_primary: boolean;
+  position: number;
+};
 
 // ============================================================
 // EditAdminJobForm
@@ -69,6 +82,61 @@ export default function EditAdminJobForm({
   const [newRefs, setNewRefs] = useState<File[]>([]);
 
   const [busy, setBusy] = useState(false);
+
+  // ---- Variants ----
+  // Unlike everything else on this form, variants are managed
+  // LIVE rather than on Save: the job already exists, so a new
+  // colourway can be POSTed straight away. Deferring them would
+  // mean an admin could add a variant, hit Cancel, and be unsure
+  // whether it landed.
+  const [variants, setVariants] = useState<Variant[] | null>(null);
+  const [variantDraft, setVariantDraft] = useState('');
+  const [addingVariant, setAddingVariant] = useState(false);
+  const [variantErr, setVariantErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    crmFetch(`/api/projects/${project.id}/variants`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setVariants(d.variants ?? []);
+      })
+      .catch(() => {
+        // Most likely the variants migration hasn't been run yet.
+        // An empty list degrades to "no variants" rather than
+        // breaking the whole edit form.
+        if (!cancelled) setVariants([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  async function addVariant() {
+    const variantName = variantDraft.trim();
+    if (!variantName || addingVariant) return;
+    setVariantErr(null);
+    setAddingVariant(true);
+    try {
+      const res = await crmFetch(`/api/projects/${project.id}/variants`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: variantName }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setVariantErr(data.error || 'Could not add the variant.');
+        return;
+      }
+      setVariants((prev) => [...(prev ?? []), data.variant as Variant]);
+      setVariantDraft('');
+    } catch (e) {
+      setVariantErr((e as Error).message || 'Network error.');
+    } finally {
+      setAddingVariant(false);
+    }
+  }
+
   const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'saving'>(
     'idle'
   );
@@ -385,6 +453,109 @@ export default function EditAdminJobForm({
             </div>
 
             {err && <div className="crm-error">{err}</div>}
+
+            {/* ---- Variants ----
+                Saved immediately on Add, independently of the
+                Save changes button below, because the product
+                already exists and the API can take the write now. */}
+            <div className="crm-form-group" style={{ marginTop: 24 }}>
+              <label className="crm-label">Variants</label>
+              <p
+                style={{
+                  color: 'var(--text-dim)',
+                  fontSize: 12,
+                  margin: '0 0 8px',
+                }}
+              >
+                Colourways of this product. Each needs its own zip from the
+                artist and is approved on its own, but they all stay under this
+                one job and share the reference images above. Added variants
+                save straight away — no need to press Save changes.
+              </p>
+
+              {variants === null ? (
+                <p
+                  style={{
+                    color: 'var(--text-dim)',
+                    fontSize: 13,
+                    margin: 0,
+                  }}
+                >
+                  Loading…
+                </p>
+              ) : (
+                <>
+                  {variants.length > 0 && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        marginBottom: 10,
+                      }}
+                    >
+                      {variants.map((v) => (
+                        <span
+                          key={v.id}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            border: '1px solid var(--border)',
+                            borderRadius: 999,
+                            padding: '4px 10px',
+                            fontSize: 13,
+                          }}
+                          title={
+                            v.is_primary
+                              ? 'The original colourway'
+                              : `Variant · ${v.slug}`
+                          }
+                        >
+                          <strong style={{ fontWeight: 600 }}>{v.name}</strong>
+                          <StatusBadge
+                            status={v.status}
+                            revisionCount={v.revision_count}
+                            assigned
+                          />
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      className="crm-input"
+                      placeholder="e.g. Grey"
+                      value={variantDraft}
+                      disabled={addingVariant}
+                      onChange={(e) => setVariantDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          addVariant();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="crm-btn crm-btn-secondary"
+                      onClick={addVariant}
+                      disabled={addingVariant || !variantDraft.trim()}
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      {addingVariant ? 'Adding…' : 'Add variant'}
+                    </button>
+                  </div>
+
+                  {variantErr && (
+                    <div className="crm-error" style={{ marginTop: 10 }}>
+                      {variantErr}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
 
             <div
               style={{

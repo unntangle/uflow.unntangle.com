@@ -115,6 +115,11 @@ export default function AdminDashboard({
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
+  // ---- Add-variant modal state. A variant is a colourway of an
+  // existing product (Black chair → Grey chair): its own model,
+  // its own QA cycle, but still ONE row on this dashboard.
+  const [variantTarget, setVariantTarget] = useState<Project | null>(null);
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -346,6 +351,10 @@ export default function AdminDashboard({
     emptyMsg: string;
     showAsset: boolean;   // "View GLB" column on Approved
     showRevision: boolean; // Revision column on IQA / IQA Rejected
+    // Artist column. Optional — undefined means show it. Only YTA
+    // turns it off: those rows are unassigned by definition, so
+    // the cell could only ever read "unassigned".
+    showArtist?: boolean;
     actionKind: 'review' | 'assign' | 'reassign' | 'none';
   };
   const tabMeta: Record<Tab, TabMeta> = {
@@ -355,6 +364,7 @@ export default function AdminDashboard({
       emptyMsg: 'No jobs waiting for allocation.',
       showAsset: false,
       showRevision: false,
+      showArtist: false,
       actionKind: 'assign',
     },
     yts: {
@@ -621,6 +631,7 @@ export default function AdminDashboard({
                   setDeleteErr(null);
                   setDeleteTarget(p);
                 }}
+                onAddVariant={(p) => setVariantTarget(p)}
               />
             )
           )}
@@ -636,6 +647,19 @@ export default function AdminDashboard({
           onDone={() => {
             setReassigning(null);
             refreshProjects();
+          }}
+        />
+      )}
+
+      {variantTarget && (
+        <AddVariantModal
+          project={variantTarget}
+          artists={artists}
+          onClose={() => setVariantTarget(null)}
+          onDone={() => {
+            setVariantTarget(null);
+            refreshProjects();
+            router.refresh();
           }}
         />
       )}
@@ -799,19 +823,32 @@ function ProjectTable({
   onReview,
   onAssign,
   onDelete,
+  onAddVariant,
 }: {
   projects: Project[];
   meta: {
     label: string;
     showAsset: boolean;
     showRevision: boolean;
+    showArtist?: boolean;
     actionKind: 'review' | 'assign' | 'reassign' | 'none';
   };
   onReview: (p: Project) => void;
   onAssign: (p: Project) => void;
   onDelete?: (p: Project) => void;
+  onAddVariant?: (p: Project) => void;
 }) {
-  const hasAction = meta.actionKind !== 'none';
+  // The Action column used to be hidden on tabs with actionKind
+  // 'none'. Add variant is available on every row regardless of
+  // stage — a colourway can be commissioned off an approved
+  // product as easily as a draft one — so the column now always
+  // renders and `actionKind` only governs the stage-specific
+  // action sitting next to it.
+  const hasAction = true;
+
+  // Default the Artist column ON so only the tab that explicitly
+  // opts out (YTA) loses it.
+  const showArtist = meta.showArtist !== false;
 
   // Per-column sort. Artist/Project/Client/Revision sort by their
   // natural value; Created/Updated chronologically; Status by
@@ -830,7 +867,9 @@ function ProjectTable({
     <table className="crm-table">
       <thead>
         <tr>
-          <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
+          {showArtist && (
+            <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
+          )}
           <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
           <th>References</th>
           <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
@@ -847,11 +886,13 @@ function ProjectTable({
       <tbody>
         {sorted.map((p) => (
           <tr key={p.id}>
-            <td>
-              {p.assignee?.name || (
-                <em style={{ color: 'var(--text-faint)' }}>unassigned</em>
-              )}
-            </td>
+            {showArtist && (
+              <td>
+                {p.assignee?.name || (
+                  <em style={{ color: 'var(--text-faint)' }}>unassigned</em>
+                )}
+              </td>
+            )}
             <td>
               <strong style={{ display: 'block' }}>{p.name}</strong>
               <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
@@ -927,7 +968,15 @@ function ProjectTable({
                     gap: 8,
                     alignItems: 'center',
                     justifyContent: 'center',
-                    whiteSpace: 'nowrap',
+                    // Wrap rather than overflow: three controls
+                    // (Review/Assign, Add variant, Delete) can
+                    // exceed the column on a narrow window, and
+                    // nowrap on the container clipped the last
+                    // one off the right edge. Individual controls
+                    // still keep their own nowrap so no single
+                    // label breaks mid-word.
+                    flexWrap: 'wrap',
+                    rowGap: 4,
                   }}
                 >
                   {meta.actionKind === 'review' && (
@@ -954,6 +1003,19 @@ function ProjectTable({
                       Reassign
                     </a>
                   )}
+                  {/* Add variant — available on every row. Creates
+                      a sibling colourway that runs its own QA
+                      cycle but stays under this product's row. */}
+                  {onAddVariant && (
+                    <a
+                      className="crm-link"
+                      onClick={() => onAddVariant(p)}
+                      title="Add a colour variant of this product"
+                      style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                    >
+                      Add variant
+                    </a>
+                  )}
                   {/* Delete — only shown for jobs admin created
                       that are still in draft. Both conditions are
                       hard-checked on the server too; this is the
@@ -967,10 +1029,14 @@ function ProjectTable({
                         className="crm-btn crm-btn-ghost-danger crm-btn-icon"
                         onClick={() => onDelete(p)}
                         title="Delete this job"
+                        // Icon-only. The text label pushed the
+                        // column past the viewport once Add
+                        // variant joined the row; the tooltip and
+                        // aria-label carry the meaning instead.
+                        aria-label="Delete this job"
                         style={{ whiteSpace: 'nowrap' }}
                       >
                         <Trash2 size={14} strokeWidth={1.75} />
-                        <span>Delete</span>
                       </button>
                     )}
                 </div>
@@ -1178,6 +1244,176 @@ function ReassignModal({
           <button className="crm-btn crm-btn-secondary" onClick={onClose}>Cancel</button>
           <button className="crm-btn" onClick={submit} disabled={busy || !target}>
             {busy ? 'Saving…' : project.assigned_to ? 'Reassign' : 'Assign'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Add-variant modal
+//
+// Creates a colourway of an existing product (Black chair → Grey
+// chair). The variant is a row in uflow_project_variants, NOT a
+// new project — the dashboard keeps showing one row per product,
+// so nothing appears in the table when this succeeds.
+//
+// The variant starts in 'draft' and inherits the product's artist
+// by default (resolved server-side from the primary variant). It
+// then runs the nine-state machine independently, so this new
+// colourway can be approved while its sibling is still in IQA.
+//
+// Reference images are deliberately absent here: they belong to
+// the product and are uploaded in one shot at job creation.
+// ============================================================
+function AddVariantModal({
+  project,
+  artists,
+  onClose,
+  onDone,
+}: {
+  project: Project;
+  artists: Artist[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Who the variant will land with. The server resolves this off
+  // the primary variant; we mirror the product's assignee here so
+  // the admin can see the outcome before committing.
+  const inherited =
+    project.assignee ??
+    artists.find((a) => a.id === project.assigned_to) ??
+    null;
+
+  // Preview of the slug the server will derive, so a name like
+  // "Light Grey" visibly becomes "light-grey" before submitting.
+  const slugPreview = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  async function submit() {
+    if (!name.trim() || busy) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      const res = await crmFetch(`/api/projects/${project.id}/variants`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(data.error || 'Could not add the variant.');
+        return;
+      }
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message || 'Network error.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="crm-modal-backdrop" onClick={() => !busy && onClose()}>
+      <div
+        className="crm-modal"
+        style={{ maxWidth: 480 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="crm-modal-header">
+          <div>
+            <h2 className="crm-modal-title">Add variant</h2>
+            <p
+              style={{
+                margin: '4px 0 0',
+                color: 'var(--text-dim)',
+                fontSize: 13,
+              }}
+            >
+              {project.client.name} · {project.name}
+            </p>
+          </div>
+          <button
+            className="crm-modal-close"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="crm-form-group">
+          <label className="crm-label">Variant name</label>
+          <input
+            className="crm-input"
+            value={name}
+            autoFocus
+            placeholder="e.g. Grey"
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit();
+            }}
+          />
+          {slugPreview && (
+            <p
+              style={{
+                margin: '6px 0 0',
+                color: 'var(--text-faint)',
+                fontSize: 12,
+              }}
+            >
+              Slug: {slugPreview}
+            </p>
+          )}
+        </div>
+
+        <p style={{ color: 'var(--text-dim)', fontSize: 13, marginTop: 4 }}>
+          {inherited ? (
+            <>
+              Goes to <strong>{inherited.name}</strong>, inherited from this
+              product. It&apos;ll appear on their dashboard as a new job to
+              start, needing its own zip.
+            </>
+          ) : (
+            <>
+              This product has no artist yet, so the variant lands in YTA for
+              allocation.
+            </>
+          )}{' '}
+          Reference images are shared across variants — nothing to re-upload.
+        </p>
+
+        {err && <div className="crm-error">{err}</div>}
+
+        <div
+          style={{
+            display: 'flex',
+            gap: 8,
+            justifyContent: 'flex-end',
+            marginTop: 16,
+          }}
+        >
+          <button
+            className="crm-btn crm-btn-secondary"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button
+            className="crm-btn"
+            onClick={submit}
+            disabled={busy || !name.trim()}
+          >
+            {busy ? 'Adding…' : 'Add variant'}
           </button>
         </div>
       </div>

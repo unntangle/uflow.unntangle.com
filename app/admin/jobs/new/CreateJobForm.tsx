@@ -49,6 +49,14 @@ export default function CreateJobForm({
   const ASSIGN_LATER = '__unassigned__';
   const [assignedTo, setAssignedTo] = useState<string>(ASSIGN_LATER);
   const [brief, setBrief] = useState('');
+  // Colourway names to create alongside the product, e.g.
+  // ['Grey', 'Navy']. The product always gets an 'Original'
+  // primary variant server-side, so this list is the EXTRAS only
+  // — leaving it empty gives the same single-model job as before.
+  // Each one becomes its own QA cycle needing its own zip, but
+  // they all share this job's reference images.
+  const [variants, setVariants] = useState<string[]>([]);
+  const [variantDraft, setVariantDraft] = useState('');
   const [refs, setRefs] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'creating'>('idle');
@@ -60,6 +68,28 @@ export default function CreateJobForm({
   }
   function removeRefAt(i: number) {
     setRefs((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  // Commit the typed variant name. Compares on the slugified form
+  // so "Light Grey" and "light grey" are caught as the same thing
+  // here rather than being silently dropped by the server's
+  // de-dupe.
+  function addVariant() {
+    const name = variantDraft.trim();
+    if (!name) return;
+    const key = (s: string) =>
+      s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (key(name) === 'original') {
+      setVariantDraft('');
+      return;
+    }
+    setVariants((prev) =>
+      prev.some((v) => key(v) === key(name)) ? prev : [...prev, name]
+    );
+    setVariantDraft('');
+  }
+  function removeVariantAt(i: number) {
+    setVariants((prev) => prev.filter((_, idx) => idx !== i));
   }
 
   async function submit() {
@@ -137,6 +167,10 @@ export default function CreateJobForm({
           assigned_to:
             assignedTo === ASSIGN_LATER ? null : assignedTo,
           brief: brief.trim() || undefined,
+          // Extra colourways. The server always creates the
+          // 'Original' primary variant, so this carries only the
+          // additional ones.
+          variants,
           reference_image_urls: referenceUrls,
         }),
       });
@@ -261,6 +295,89 @@ export default function CreateJobForm({
                 onChange={(e) => setBrief(e.target.value)}
                 placeholder="What needs to be modelled? Dimensions, materials, constraints…"
               />
+            </div>
+
+            <div className="crm-form-group">
+              <label className="crm-label">Variants (optional)</label>
+              <p
+                style={{
+                  color: 'var(--text-dim)',
+                  fontSize: 12,
+                  margin: '0 0 8px',
+                }}
+              >
+                Colourways of the same product — add &ldquo;Grey&rdquo; and the
+                artist delivers a separate zip for it, reviewed and approved on
+                its own. Everything stays under one row on the dashboard and
+                shares the reference images below.
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="crm-input"
+                  placeholder="e.g. Grey"
+                  value={variantDraft}
+                  onChange={(e) => setVariantDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Enter adds the chip rather than submitting the
+                    // whole form, which would create the job early.
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addVariant();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="crm-btn crm-btn-secondary"
+                  onClick={addVariant}
+                  disabled={!variantDraft.trim()}
+                  style={{ whiteSpace: 'nowrap' }}
+                >
+                  Add variant
+                </button>
+              </div>
+
+              {variants.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    marginTop: 10,
+                  }}
+                >
+                  {variants.map((v, i) => (
+                    <span
+                      key={v}
+                      className="crm-badge crm-badge-draft"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      {v}
+                      <button
+                        type="button"
+                        onClick={() => removeVariantAt(i)}
+                        aria-label={`Remove ${v}`}
+                        title={`Remove ${v}`}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: 'inherit',
+                          font: 'inherit',
+                          lineHeight: 1,
+                          padding: 0,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="crm-form-group">
