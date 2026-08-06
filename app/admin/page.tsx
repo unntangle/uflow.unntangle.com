@@ -56,7 +56,7 @@ type ProjectRow = {
 export default async function AdminPage() {
   const user = await requireUser('admin');
 
-  const [{ data: rawProjects }, { data: artists }] =
+  const [{ data: rawProjects, error: projectsError }, { data: artists, error: artistsError }] =
     await Promise.all([
       supabase()
         .from('uflow_projects')
@@ -70,6 +70,18 @@ export default async function AdminPage() {
         .eq('role', '3d_artist')
         .order('name'),
     ]);
+
+  // Same reasoning as the artist dashboard: swallowing `error`
+  // here turns a failed query into an empty Overview, which reads
+  // as "no jobs exist" rather than "the query broke". Surface it.
+  if (projectsError) {
+    console.error('[admin.page] project query failed', projectsError);
+    throw new Error(`Could not load jobs: ${projectsError.message}`);
+  }
+  if (artistsError) {
+    console.error('[admin.page] artist query failed', artistsError);
+    throw new Error(`Could not load artists: ${artistsError.message}`);
+  }
 
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;

@@ -37,13 +37,25 @@ type ProjectRow = {
 export default async function ArtistPage() {
   const user = await requireUser('3d_artist');
 
-  const { data: projects } = await supabase()
+  const { data: projects, error } = await supabase()
     .from('uflow_projects')
     .select(
       'id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, approved_glb_url, assigned_to, brief, updated_at, client:uflow_clients(slug, name)'
     )
     .eq('assigned_to', user.userId)
     .order('updated_at', { ascending: false });
+
+  // Fail loudly. This query previously discarded `error` and fell
+  // through to `(projects || [])`, so any server-side failure —
+  // a column added to the select before its migration ran, a
+  // renamed relation, a network blip — rendered as a dashboard
+  // full of zeros. An artist can't tell that apart from "no work
+  // assigned to me", and neither could we: it looked like data
+  // loss. Throwing surfaces the real cause immediately instead.
+  if (error) {
+    console.error('[artist.page] project query failed', error);
+    throw new Error(`Could not load your jobs: ${error.message}`);
+  }
 
   // Normalise the joined `client` field (supabase typing returns it as
   // either an object or a single-element array depending on version).

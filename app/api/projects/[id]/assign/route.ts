@@ -48,11 +48,31 @@ export async function PATCH(
     );
   }
 
+  // Read the current holder so we only reset the feedback marker
+  // on an actual change of artist. Re-assigning to the same person
+  // shouldn't wipe what they've already read.
+  const { data: current } = await supabase()
+    .from('uflow_projects')
+    .select('assigned_to')
+    .eq('id', id)
+    .maybeSingle();
+
+  const changingArtist = current?.assigned_to !== assigned_to;
+
   const { data, error } = await supabase()
     .from('uflow_projects')
     .update({
       assigned_to,
       updated_at: new Date().toISOString(),
+      // feedback_seen_revision means "the assigned artist has
+      // opened the feedback gallery for this rejection round".
+      // It lives on the project, not per user, so handing the job
+      // to someone else would otherwise leave the incoming artist
+      // inheriting the previous one's read state — the job would
+      // skip their Rejected tab and they'd never be prompted to
+      // read feedback they haven't seen. Resetting to 0 puts any
+      // outstanding round back in their inbox.
+      ...(changingArtist ? { feedback_seen_revision: 0 } : {}),
     })
     .eq('id', id)
     .select()
