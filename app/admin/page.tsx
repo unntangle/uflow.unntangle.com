@@ -46,6 +46,11 @@ type ProjectRow = {
     | { role: string }
     | { role: string }[]
     | null;
+  // Reference images attached at job-creation time. We pull the
+  // whole set (they're one small row each) and collapse to the
+  // earliest one in the normaliser below, so the dashboard can
+  // render a thumbnail without an N+1 fetch per row.
+  references: { image_url: string; created_at: string }[] | null;
 };
 
 export default async function AdminPage() {
@@ -56,7 +61,7 @@ export default async function AdminPage() {
       supabase()
         .from('uflow_projects')
         .select(
-          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role)'
+          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at)'
         )
         .order('updated_at', { ascending: false }),
       supabase()
@@ -71,6 +76,13 @@ export default async function AdminPage() {
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
     const a = Array.isArray(r.assignee) ? r.assignee[0] : r.assignee;
     const cr = Array.isArray(r.creator) ? r.creator[0] : r.creator;
+    // Earliest reference = the dashboard thumbnail. Sorted here
+    // rather than in the query because PostgREST can't order an
+    // embedded resource independently of the parent.
+    const refs = Array.isArray(r.references) ? r.references : [];
+    const firstRef = [...refs].sort((x, y) =>
+      x.created_at < y.created_at ? -1 : 1
+    )[0];
     // Collapse the joined creator role down to a boolean the
     // dashboard component can branch on without re-doing the
     // shape gymnastics every render. Null creator (e.g. legacy
@@ -81,9 +93,11 @@ export default async function AdminPage() {
       client: c ?? { slug: '', name: '' },
       assignee: a,
       created_by_admin: cr?.role === 'admin',
-      // Strip the raw join out of the wire payload; the component
-      // only consumes the boolean above.
+      // Strip the raw joins out of the wire payload; the component
+      // only consumes the boolean + single URL above.
       creator: undefined,
+      thumb_url: firstRef?.image_url ?? null,
+      references: undefined,
     };
   });
 

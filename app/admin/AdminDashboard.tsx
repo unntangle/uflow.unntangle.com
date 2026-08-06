@@ -62,6 +62,11 @@ type Project = {
   // when the join can't resolve, so the Delete button stays
   // hidden rather than risk an incorrect affordance.
   created_by_admin?: boolean;
+  // URL of the earliest reference image, collapsed server-side
+  // from the uflow_project_references join. Null when the job was
+  // created without references. Drives the References column
+  // thumbnail; the full set still lives on the gallery page.
+  thumb_url?: string | null;
 };
 
 type Client = { slug: string; name: string };
@@ -285,11 +290,19 @@ export default function AdminDashboard({
                 // does on SSR — collapsing to a boolean keeps
                 // ProjectTable's Delete-button guard simple.
                 creator?: { role: string } | { role: string }[] | null;
+                // Raw references join — collapsed to thumb_url
+                // below, mirroring what app/admin/page.tsx does
+                // on SSR so a refresh doesn't drop the thumbnail.
+                references?: { image_url: string; created_at: string }[] | null;
               }
             ) => {
               const cr = Array.isArray(p.creator)
                 ? p.creator[0]
                 : p.creator;
+              const refs = Array.isArray(p.references) ? p.references : [];
+              const firstRef = [...refs].sort((x, y) =>
+                x.created_at < y.created_at ? -1 : 1
+              )[0];
               return {
                 ...p,
                 client: Array.isArray(p.client) ? p.client[0] : p.client,
@@ -298,6 +311,8 @@ export default function AdminDashboard({
                   : p.assignee,
                 created_by_admin: cr?.role === 'admin',
                 creator: undefined,
+                thumb_url: firstRef?.image_url ?? null,
+                references: undefined,
               };
             }
           );
@@ -508,15 +523,7 @@ export default function AdminDashboard({
                         </span>
                       </td>
                       <td>
-                        <a
-                          href={crmPath(`/admin/qa/${p.id}/references`)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="crm-link"
-                          title="Open the reference gallery in a new tab"
-                        >
-                          View
-                        </a>
+                        <ReferenceThumb project={p} />
                       </td>
                       <td>{p.client.name}</td>
                       <DateCell value={p.created_at} />
@@ -852,15 +859,7 @@ function ProjectTable({
               </span>
             </td>
             <td>
-              <a
-                href={crmPath(`/admin/qa/${p.id}/references`)}
-                target="_blank"
-                rel="noreferrer"
-                className="crm-link"
-                title="Open the reference gallery in a new tab"
-              >
-                View
-              </a>
+              <ReferenceThumb project={p} />
             </td>
             <td>{p.client.name}</td>
             {meta.showRevision && (
@@ -981,6 +980,67 @@ function ProjectTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+// ============================================================
+// References cell — thumbnail of the first reference image,
+// hyperlinked to the full gallery in a new tab (same target the
+// old "View" text link used).
+//
+// `thumb_url` is collapsed server-side from the references join,
+// so there's no per-row fetch here. When a job was created with
+// no references there's nothing to show, so we fall back to a
+// dim em-dash — deliberately NOT a link, since the gallery would
+// just render its empty state.
+//
+// The <img> is intentionally raw rather than next/image: these
+// are remote Cloudinary/R2 URLs on arbitrary hosts, and adding
+// them to next.config remotePatterns is a bigger change than
+// this column warrants.
+// ============================================================
+function ReferenceThumb({ project }: { project: Project }) {
+  if (!project.thumb_url) {
+    return (
+      <span
+        style={{ color: 'var(--text-faint)' }}
+        title="No reference images attached to this job"
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <a
+      href={crmPath(`/admin/qa/${project.id}/references`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open the reference gallery for ${project.name}`}
+      style={{
+        display: 'inline-block',
+        lineHeight: 0,
+        border: '1px solid var(--border)',
+        borderRadius: 6,
+        overflow: 'hidden',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={project.thumb_url}
+        alt=""
+        width={44}
+        height={44}
+        loading="lazy"
+        decoding="async"
+        style={{
+          width: 44,
+          height: 44,
+          objectFit: 'cover',
+          display: 'block',
+          background: 'var(--surface-2, transparent)',
+        }}
+      />
+    </a>
   );
 }
 

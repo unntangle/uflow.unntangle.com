@@ -29,6 +29,10 @@ type Project = {
     | 'client_review'
     | 'approved';
   revision_count: number;
+  // Highest rejection round whose feedback this artist has opened.
+  // A row counts as "unread feedback" while revision_count exceeds
+  // it. Set server-side when the feedback gallery is opened.
+  feedback_seen_revision: number;
   zip_url: string | null;
   glb_url: string | null;
   approved_glb_url: string | null;
@@ -43,6 +47,30 @@ type ReferenceImage = {
   image_url: string;
   created_at: string;
 };
+
+// ============================================================
+// Rejection helpers
+//
+// `isRejected` — the row is sitting in a rejected state, from
+// either side of the pipeline.
+//
+// `hasUnreadFeedback` — the artist hasn't opened the feedback
+// gallery for the CURRENT rejection round yet. revision_count
+// ticks on every rejection, so this self-resets: reading round 1
+// clears the flag, a round-2 rejection raises it again.
+//
+// feedback_seen_revision is defaulted defensively — a row fetched
+// before the 2026-08-06 migration ran would arrive undefined, and
+// treating that as 0 keeps it in the inbox rather than silently
+// hiding feedback.
+// ============================================================
+function isRejected(p: Project): boolean {
+  return p.status === 'iqa_rejected' || p.status === 'eqa_rejected';
+}
+
+function hasUnreadFeedback(p: Project): boolean {
+  return (p.revision_count ?? 0) > (p.feedback_seen_revision ?? 0);
+}
 
 // ============================================================
 // ArtistDashboard
@@ -124,14 +152,31 @@ export default function ArtistDashboard({
         (p) =>
           p.status === 'wip' ||
           p.status === 'iqa_wip' ||
-          p.status === 'eqa_wip'
+          p.status === 'eqa_wip' ||
+          // Rejected rows whose feedback the artist has already
+          // read but not yet Started. They've left the Rejected
+          // inbox, and they can't sit in limbo — the action cell
+          // is status-driven, so Start still renders for them
+          // here. Admin still sees these under Rejected.
+          (isRejected(p) && !hasUnreadFeedback(p))
       ),
     [projects]
   );
+  // Rejected tabs behave as an INBOX: a row shows only while its
+  // feedback is unread. Split by source now — admin's IQA
+  // pushback and the client's EQA pushback are different
+  // conversations and were previously collapsed into one tab.
   const iqaRejectedProjects = useMemo(
     () =>
       projects.filter(
-        (p) => p.status === 'iqa_rejected' || p.status === 'eqa_rejected'
+        (p) => p.status === 'iqa_rejected' && hasUnreadFeedback(p)
+      ),
+    [projects]
+  );
+  const eqaRejectedProjects = useMemo(
+    () =>
+      projects.filter(
+        (p) => p.status === 'eqa_rejected' && hasUnreadFeedback(p)
       ),
     [projects]
   );
@@ -150,6 +195,7 @@ export default function ArtistDashboard({
       wip: wipProjects.length,
       iqa: iqaProjects.length,
       iqaRejected: iqaRejectedProjects.length,
+      eqaRejected: eqaRejectedProjects.length,
       withClient: projects.filter((p) => p.status === 'client_review').length,
       approved: completedProjects.length,
     };
@@ -159,6 +205,7 @@ export default function ArtistDashboard({
     wipProjects,
     iqaProjects,
     iqaRejectedProjects,
+    eqaRejectedProjects,
     completedProjects,
   ]);
 
@@ -269,6 +316,7 @@ export default function ArtistDashboard({
                 wip: wipProjects,
                 iqa: iqaProjects,
                 iqa_rejected: iqaRejectedProjects,
+                eqa_rejected: eqaRejectedProjects,
                 open: activeProjects,
                 approved: completedProjects,
               }}
@@ -337,6 +385,7 @@ type JobsTabKey =
   | 'wip'
   | 'iqa'
   | 'iqa_rejected'
+  | 'eqa_rejected'
   | 'open'
   | 'approved';
 
@@ -351,6 +400,7 @@ function OverviewPanel({
     wip: number;
     iqa: number;
     iqaRejected: number;
+    eqaRejected: number;
     withClient: number;
     approved: number;
   };
@@ -368,6 +418,7 @@ function OverviewPanel({
     { label: 'WIP',          value: stats.wip,         tone: 'crm-badge-wip',           tab: 'wip' },
     { label: 'IQA',          value: stats.iqa,         tone: 'crm-badge-pending',       tab: 'iqa' },
     { label: 'IQA Rejected', value: stats.iqaRejected, tone: 'crm-badge-rejected',      tab: 'iqa_rejected' },
+    { label: 'EQA Rejected', value: stats.eqaRejected, tone: 'crm-badge-rejected',      tab: 'eqa_rejected' },
     { label: 'With client',  value: stats.withClient,  tone: 'crm-badge-client-review', tab: null },
     { label: 'Approved',     value: stats.approved,    tone: 'crm-badge-approved',      tab: 'approved' },
   ];
@@ -494,6 +545,7 @@ function JobsTabs({
     wip: Project[];
     iqa: Project[];
     iqa_rejected: Project[];
+    eqa_rejected: Project[];
     open: Project[];
     approved: Project[];
   };
@@ -512,6 +564,7 @@ function JobsTabs({
       raw === 'wip' ||
       raw === 'iqa' ||
       raw === 'iqa_rejected' ||
+      raw === 'eqa_rejected' ||
       raw === 'open' ||
       raw === 'approved'
     ) {
@@ -521,14 +574,16 @@ function JobsTabs({
   }
 
   // Default landing tab: most-urgent-first.
-  //   1. IQA Rejected  — feedback sitting unanswered
-  //   2. YTS           — new work to acknowledge
-  //   3. WIP           — in-flight work
-  //   4. IQA           — waiting on review
-  //   5. Open Jobs     — anything else in motion
-  //   6. Approved      — archive (last resort)
+  //   1. EQA Rejected  — client pushback, the costliest to sit on
+  //   2. IQA Rejected  — admin feedback sitting unread
+  //   3. YTS           — new work to acknowledge
+  //   4. WIP           — in-flight work
+  //   5. IQA           — waiting on review
+  //   6. Open Jobs     — anything else in motion
+  //   7. Approved      — archive (last resort)
   // Falls back to YTS if every bucket is empty.
   const smartDefault: JobsTabKey = (() => {
+    if (buckets.eqa_rejected.length > 0) return 'eqa_rejected';
     if (buckets.iqa_rejected.length > 0) return 'iqa_rejected';
     if (buckets.yts.length > 0) return 'yts';
     if (buckets.wip.length > 0) return 'wip';
@@ -564,7 +619,13 @@ function JobsTabs({
       key: 'iqa_rejected',
       label: 'IQA Rejected',
       count: buckets.iqa_rejected.length,
-      emptyMsg: 'No revisions pending.',
+      emptyMsg: 'No unread internal QA feedback.',
+    },
+    {
+      key: 'eqa_rejected',
+      label: 'EQA Rejected',
+      count: buckets.eqa_rejected.length,
+      emptyMsg: 'No unread client feedback.',
     },
     {
       key: 'open',
@@ -590,6 +651,7 @@ function JobsTabs({
       case 'wip':           return buckets.wip;
       case 'iqa':           return buckets.iqa;
       case 'iqa_rejected':  return buckets.iqa_rejected;
+      case 'eqa_rejected':  return buckets.eqa_rejected;
       case 'open':          return buckets.open;
       case 'approved':      return buckets.approved;
     }

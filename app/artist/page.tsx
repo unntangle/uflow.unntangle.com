@@ -22,6 +22,9 @@ type ProjectRow = {
   name: string;
   status: ProjectStatus;
   revision_count: number;
+  // Highest rejection round this artist has opened the feedback
+  // gallery for. Drives the Rejected-tab "inbox" behaviour.
+  feedback_seen_revision: number;
   zip_url: string | null;
   glb_url: string | null;
   approved_glb_url: string | null;
@@ -37,7 +40,7 @@ export default async function ArtistPage() {
   const { data: projects } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, zip_url, glb_url, approved_glb_url, assigned_to, brief, updated_at, client:uflow_clients(slug, name)'
+      'id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, approved_glb_url, assigned_to, brief, updated_at, client:uflow_clients(slug, name)'
     )
     .eq('assigned_to', user.userId)
     .order('updated_at', { ascending: false });

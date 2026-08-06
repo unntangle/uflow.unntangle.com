@@ -79,7 +79,7 @@ export default async function Page({
   const { data: project } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, revision_count, assigned_to, client_id, client:uflow_clients(slug, name)'
+      'id, slug, name, revision_count, feedback_seen_revision, status, assigned_to, client_id, client:uflow_clients(slug, name)'
     )
     .eq('id', id)
     .maybeSingle();
@@ -94,6 +94,39 @@ export default async function Page({
     if (!user.clientId || project.client_id !== user.clientId) notFound();
   }
   // Admin: no extra check.
+
+  // ----- Mark the feedback as seen (artist only) -----
+  // This is the "artist has read the feedback" acknowledgement.
+  // Opening this page is the trigger, so we write it here rather
+  // than from the client — no effect to fire, no way to render
+  // the gallery without the marker landing.
+  //
+  // Deliberately does NOT touch `status`: the row must stay
+  // iqa_rejected / eqa_rejected so admin's Rejected tab keeps
+  // showing it until the artist actually clicks Start. Only the
+  // artist's own view reacts to this column.
+  //
+  // Guarded three ways: assigned artist only (checked above), only
+  // when there's something new to acknowledge, and the write is
+  // monotonic so an artist browsing an OLD revision via
+  // ?revision=1 can't mark a newer round as read.
+  if (
+    user.role === '3d_artist' &&
+    (project.revision_count ?? 0) > (project.feedback_seen_revision ?? 0)
+  ) {
+    const { error: seenErr } = await supabase()
+      .from('uflow_projects')
+      .update({ feedback_seen_revision: project.revision_count })
+      .eq('id', id)
+      // Re-assert ownership at write time, and keep the update
+      // monotonic under concurrent tabs.
+      .eq('assigned_to', user.userId)
+      .lt('feedback_seen_revision', project.revision_count);
+    // A failure here must not break the page — the artist still
+    // gets their feedback, the row just stays in the Rejected tab
+    // until the next visit.
+    if (seenErr) console.error('[feedback.markSeen]', seenErr);
+  }
 
   // ----- Fetch the feedback rows -----
   // We normalise to a common shape { id, revision, image_url,
