@@ -556,8 +556,7 @@ export default function QaReviewPage({
                         color: 'inherit',
                       }}
                     >
-                      {v.name}
-                      {v.is_primary ? ' (original)' : ''}
+                      {v.is_primary ? project.name : v.name}
                       {v.revision_count > 0 && (
                         <span
                           style={{

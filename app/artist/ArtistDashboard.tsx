@@ -854,12 +854,32 @@ function ActiveJobsTable({
                   </span>
                 </button>
               ) : (
-                <>
-                  <strong style={{ display: 'block' }}>{p.name}</strong>
-                  <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                    {p.slug}
+                // No variants: same flex layout, with a spacer
+                // standing in for the arrow. Without it these
+                // rows inherit the table's centred alignment AND
+                // sit ~16px left of the expandable ones, so the
+                // model names wouldn't line up down the column.
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 6,
+                    textAlign: 'left',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{ display: 'inline-block', width: 10, flex: 'none' }}
+                  />
+                  <span>
+                    <strong style={{ display: 'block' }}>{p.name}</strong>
+                    <span
+                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
+                    >
+                      {p.slug}
+                    </span>
                   </span>
-                </>
+                </div>
               )}
             </td>
             <td>
@@ -1620,7 +1640,9 @@ function UploadModal({
                   gap: 8,
                 }}
               >
-                <strong>{variants[0].name}</strong>
+                <strong>
+                  {variants[0].is_primary ? project.name : variants[0].name}
+                </strong>
                 <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
                   {variants[0].is_primary
                     ? 'the original — add a variant from the admin job row to submit a colourway'
@@ -1644,8 +1666,11 @@ function UploadModal({
               >
                 {variants.map((v) => (
                   <option key={v.id} value={v.id}>
-                    {v.name}
-                    {v.is_primary ? ' (original)' : ''}
+                    {/* The primary variant is the product itself,
+                        so show the product's name rather than the
+                        placeholder 'Original' the migration
+                        backfilled. */}
+                    {v.is_primary ? project.name : v.name}
                   </option>
                 ))}
               </select>
@@ -1825,11 +1850,11 @@ function UploadGuide({ zipName }: { zipName: string }) {
           }}
         >
           <strong style={{ color: 'var(--danger)' }}>Required:</strong> name the
-          zip <code>{zipName}</code>, and name every file after the product —{' '}
-          <code>{base}.fbx</code>, <code>{base}.glb</code>, <code>{base}.gltf</code>,{' '}
-          <code>{base}.spp</code> and <code>{base}.spsm</code>, each inside its
-          folder. If anything is missing or misnamed, the upload is blocked. Max{' '}
-          {MAX_UPLOAD_MB} MB total.
+          zip <code>{zipName}</code>, and give every file inside the same name
+          — <code>{base}</code> — keeping whatever extension it already has.
+          Don&apos;t change the extensions, only the part before the dot. Each
+          file goes in its matching folder above. If anything is missing or
+          misnamed, the upload is blocked. Max {MAX_UPLOAD_MB} MB total.
         </div>
       </div>
     </div>

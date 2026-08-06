@@ -547,7 +547,9 @@ export default function EditAdminJobForm({
                               : `Variant · ${v.slug}`
                           }
                         >
-                          <strong style={{ fontWeight: 600 }}>{v.name}</strong>
+                          <strong style={{ fontWeight: 600 }}>
+                            {v.is_primary ? project.name : v.name}
+                          </strong>
                           <StatusBadge
                             status={v.status}
                             revisionCount={v.revision_count}

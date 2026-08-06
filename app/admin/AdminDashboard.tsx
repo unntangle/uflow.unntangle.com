@@ -1006,12 +1006,27 @@ function ProjectTable({
                   );
                 })()
               ) : (
-                <>
-                  <strong style={{ display: 'block' }}>{p.name}</strong>
-                  <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                    {p.slug}
+                // Spacer stands in for the arrow so names line up
+                // whether or not a product has colourways.
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 6,
+                    textAlign: 'left',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{ display: 'inline-block', width: 10, flex: 'none' }}
+                  />
+                  <span>
+                    <strong style={{ display: 'block' }}>{p.name}</strong>
+                    <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+                      {p.slug}
+                    </span>
                   </span>
-                </>
+                </div>
               )}
             </td>
             <td>
