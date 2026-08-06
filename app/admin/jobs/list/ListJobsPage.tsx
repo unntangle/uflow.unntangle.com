@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, Trash2 } from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
@@ -16,6 +16,11 @@ import {
   SortableTh,
   statusRank,
 } from '../../../lib/use-table-sort';
+import {
+  rollupStatus,
+  extraVariants,
+  hasExtraVariants,
+} from '../../../lib/variant-status';
 
 // ============================================================
 // Types
@@ -32,6 +37,22 @@ type Project = {
   client_id: string;
   client: { slug: string; name: string };
   assignee: { id: string; name: string; email: string } | null;
+  // Colourways. The parent row's status is derived from these;
+  // they render as indented child rows when expanded.
+  variants?: Variant[];
+};
+
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: ProjectStatus;
+  revision_count: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
 };
 
 // ============================================================
@@ -73,6 +94,18 @@ export default function ListJobsPage({
   const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [delError, setDelError] = useState<string | null>(null);
+
+  // Which products have their colourways expanded. Collapsed by
+  // default so this stays a one-row-per-product index.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   // Calls the shared hard-delete endpoint, which wipes the job
   // from the DB and R2. On success we drop the row locally so the
@@ -135,7 +168,9 @@ export default function ListJobsPage({
     client: (p) => p.client.name,
     created: (p) => new Date(p.created_at),
     updated: (p) => new Date(p.updated_at),
-    status: (p) => statusRank(p.status),
+    // Derived from the variants, matching the Overview — the
+    // project's own column is stale once a colourway moves.
+    status: (p) => statusRank(rollupStatus(p)),
   });
 
   return (
@@ -190,14 +225,77 @@ export default function ListJobsPage({
               </thead>
               <tbody>
                 {sorted.map((p) => (
-                  <tr key={p.id}>
+                  <Fragment key={p.id}>
+                  <tr>
                     <td>
-                      <strong style={{ display: 'block' }}>{p.name}</strong>
-                      <span
-                        style={{ color: 'var(--text-faint)', fontSize: 12 }}
-                      >
-                        {p.slug}
-                      </span>
+                      {/* Disclosure toggle — only for products with
+                          colourways beyond the original, since the
+                          parent row already stands for that one. */}
+                      {hasExtraVariants(p.variants) ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleExpanded(p.id)}
+                          aria-expanded={expanded.has(p.id)}
+                          aria-label={
+                            expanded.has(p.id)
+                              ? 'Hide variants'
+                              : 'Show variants'
+                          }
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            color: 'inherit',
+                            display: 'flex',
+                            alignItems: 'baseline',
+                            gap: 6,
+                            textAlign: 'left',
+                          }}
+                        >
+                          <span
+                            aria-hidden
+                            style={{
+                              color: 'var(--text-faint)',
+                              fontSize: 10,
+                              display: 'inline-block',
+                              transform: expanded.has(p.id)
+                                ? 'rotate(90deg)'
+                                : 'none',
+                              transition: 'transform 0.12s',
+                            }}
+                          >
+                            ▶
+                          </span>
+                          <span>
+                            <strong style={{ display: 'block' }}>
+                              {p.name}
+                            </strong>
+                            <span
+                              style={{
+                                color: 'var(--text-faint)',
+                                fontSize: 12,
+                              }}
+                            >
+                              {p.slug} · +
+                              {extraVariants(p.variants).length} variant
+                              {extraVariants(p.variants).length === 1
+                                ? ''
+                                : 's'}
+                            </span>
+                          </span>
+                        </button>
+                      ) : (
+                        <>
+                          <strong style={{ display: 'block' }}>{p.name}</strong>
+                          <span
+                            style={{ color: 'var(--text-faint)', fontSize: 12 }}
+                          >
+                            {p.slug}
+                          </span>
+                        </>
+                      )}
                     </td>
                     <td>
                       {p.assignee?.name || (
@@ -225,7 +323,7 @@ export default function ListJobsPage({
                           (artist on it) vs YTA (no artist) — matches
                           the Overview dashboard's badge behaviour. */}
                       <StatusBadge
-                        status={p.status}
+                        status={rollupStatus(p)}
                         revisionCount={p.revision_count}
                         assigned={p.assigned_to !== null}
                       />
@@ -266,6 +364,52 @@ export default function ListJobsPage({
                       </div>
                     </td>
                   </tr>
+
+                  {/* Variant child rows, indented under their
+                      product. Edit/Delete stay on the parent —
+                      both act on the whole job. */}
+                  {expanded.has(p.id) &&
+                    extraVariants(p.variants).map((v) => (
+                      <tr
+                        key={v.id}
+                        style={{ background: 'var(--surface-2, transparent)' }}
+                      >
+                        <td style={{ paddingLeft: 28 }}>
+                          <span
+                            aria-hidden
+                            style={{
+                              color: 'var(--text-faint)',
+                              marginRight: 6,
+                            }}
+                          >
+                            └
+                          </span>
+                          <strong style={{ fontWeight: 600 }}>{v.name}</strong>
+                        </td>
+                        <td />
+                        <td />
+                        <td />
+                        <td style={{ color: 'var(--text-dim)' }}>
+                          {new Date(v.updated_at).toLocaleString(undefined, {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true,
+                          })}
+                        </td>
+                        <td>
+                          <StatusBadge
+                            status={v.status}
+                            revisionCount={v.revision_count}
+                            assigned
+                          />
+                        </td>
+                        <td />
+                      </tr>
+                    ))}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

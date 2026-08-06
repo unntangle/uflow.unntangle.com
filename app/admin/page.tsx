@@ -51,6 +51,23 @@ type ProjectRow = {
   // earliest one in the normaliser below, so the dashboard can
   // render a thumbnail without an N+1 fetch per row.
   references: { image_url: string; created_at: string }[] | null;
+  // Colourways of this product. Rendered as collapsible child
+  // rows beneath the product, so the table still shows ONE row
+  // per product at rest.
+  variants:
+    | {
+        id: string;
+        name: string;
+        slug: string;
+        status: ProjectStatus;
+        revision_count: number;
+        glb_url: string | null;
+        approved_glb_url: string | null;
+        is_primary: boolean;
+        position: number;
+        updated_at: string;
+      }[]
+    | null;
 };
 
 export default async function AdminPage() {
@@ -61,7 +78,7 @@ export default async function AdminPage() {
       supabase()
         .from('uflow_projects')
         .select(
-          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at)'
+          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at), variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at)'
         )
         .order('updated_at', { ascending: false }),
       supabase()
@@ -110,6 +127,11 @@ export default async function AdminPage() {
       creator: undefined,
       thumb_url: firstRef?.image_url ?? null,
       references: undefined,
+      // Ordered for the child-row list. PostgREST can't sort an
+      // embedded resource independently, so it's done here.
+      variants: [...(r.variants ?? [])].sort(
+        (x, y) => (x.position ?? 0) - (y.position ?? 0)
+      ),
     };
   });
 

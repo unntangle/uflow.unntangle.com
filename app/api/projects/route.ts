@@ -23,7 +23,7 @@ export async function GET() {
       // created. The GET response shape must stay in sync with
       // app/admin/page.tsx's SSR select — otherwise a refresh-
       // -via-/api/projects would silently drop the field.
-      'id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, fbx_url, gltf_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at)'
+      'id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, fbx_url, gltf_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at), variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at)'
     )
     .order('updated_at', { ascending: false });
 

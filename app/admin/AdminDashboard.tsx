@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Trash2 } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
@@ -15,6 +15,11 @@ import {
   SortableTh,
   statusRank,
 } from '../lib/use-table-sort';
+import {
+  rollupStatus,
+  extraVariants,
+  hasExtraVariants,
+} from '../lib/variant-status';
 
 // ============================================================
 // Types
@@ -67,10 +72,31 @@ type Project = {
   // created without references. Drives the References column
   // thumbnail; the full set still lives on the gallery page.
   thumb_url?: string | null;
+  // Colourways of this product, ordered by position. The table
+  // shows one row per PRODUCT; these render as indented child
+  // rows when the product is expanded.
+  variants?: Variant[];
+};
+
+// A colourway. Carries its own status and revision count because
+// each variant runs the pipeline independently — Grey can be
+// approved while Black is still in IQA.
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: Project['status'];
+  revision_count: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
 };
 
 type Client = { slug: string; name: string };
 type Artist = { id: string; name: string; email: string };
+
 
 // ============================================================
 // AdminDashboard
@@ -175,38 +201,49 @@ export default function AdminDashboard({
   }, [projects, selectedClientId]);
 
   // ----- Buckets (by stage) -----
+  // Every filter reads the ROLLED-UP status, not the product's
+  // own column, so a product with an outstanding colourway lands
+  // in the queue that colourway needs — e.g. Black sitting in IQA
+  // puts the product in the IQA tab even if the original was
+  // signed off weeks ago.
   // YTA / YTS split a 'draft' row by whether an artist is on it.
   const yta = visibleProjects.filter(
-    (p) => p.status === 'draft' && p.assigned_to === null
+    (p) => rollupStatus(p) === 'draft' && p.assigned_to === null
   );
   const yts = visibleProjects.filter(
-    (p) => p.status === 'draft' && p.assigned_to !== null
+    (p) => rollupStatus(p) === 'draft' && p.assigned_to !== null
   );
   // WIP bucket holds all three "in progress" flavours: a fresh
   // build (wip), a revision of admin's IQA feedback (iqa_wip),
   // and a revision of client's EQA feedback (eqa_wip). One tab,
   // three statuses — the StatusBadge differentiates them. The
   // tab bar stays at 9 tabs.
-  const wip = visibleProjects.filter(
-    (p) =>
-      p.status === 'wip' ||
-      p.status === 'iqa_wip' ||
-      p.status === 'eqa_wip'
+  const wip = visibleProjects.filter((p) => {
+    const s = rollupStatus(p);
+    return s === 'wip' || s === 'iqa_wip' || s === 'eqa_wip';
+  });
+  const iqa = visibleProjects.filter(
+    (p) => rollupStatus(p) === 'qa_pending'
   );
-  const iqa = visibleProjects.filter((p) => p.status === 'qa_pending');
   const iqaRejected = visibleProjects.filter(
-    (p) => p.status === 'iqa_rejected'
+    (p) => rollupStatus(p) === 'iqa_rejected'
   );
-  const eqa = visibleProjects.filter((p) => p.status === 'client_review');
+  const eqa = visibleProjects.filter(
+    (p) => rollupStatus(p) === 'client_review'
+  );
   const eqaRejected = visibleProjects.filter(
-    (p) => p.status === 'eqa_rejected'
+    (p) => rollupStatus(p) === 'eqa_rejected'
   );
   // Open Jobs = the rollup view: everything that hasn't been
   // signed off yet. Same row may also appear in one of the more
   // specific stage tabs above; this tab is for admins who want
   // the flat "what's still alive" picture.
-  const openJobs = visibleProjects.filter((p) => p.status !== 'approved');
-  const history = visibleProjects.filter((p) => p.status === 'approved');
+  const openJobs = visibleProjects.filter(
+    (p) => rollupStatus(p) !== 'approved'
+  );
+  const history = visibleProjects.filter(
+    (p) => rollupStatus(p) === 'approved'
+  );
 
   // Mode plumbing.
   const tabParam = searchParams?.get('tab');
@@ -299,6 +336,7 @@ export default function AdminDashboard({
                 // below, mirroring what app/admin/page.tsx does
                 // on SSR so a refresh doesn't drop the thumbnail.
                 references?: { image_url: string; created_at: string }[] | null;
+                variants?: Variant[] | null;
               }
             ) => {
               const cr = Array.isArray(p.creator)
@@ -318,6 +356,9 @@ export default function AdminDashboard({
                 creator: undefined,
                 thumb_url: firstRef?.image_url ?? null,
                 references: undefined,
+                variants: [...(p.variants ?? [])].sort(
+                  (x, y) => (x.position ?? 0) - (y.position ?? 0)
+                ),
               };
             }
           );
@@ -757,23 +798,26 @@ export default function AdminDashboard({
 // name contains non-ASCII characters.
 // ============================================================
 function adminStatusLabel(p: Project): string {
-  if (p.status === 'draft') {
+  // Same derived value the on-screen badge uses, so the export
+  // matches what the admin is looking at.
+  const status = rollupStatus(p);
+  if (status === 'draft') {
     return p.assigned_to ? 'YTS' : 'YTA';
   }
-  if (p.status === 'qa_pending') return 'IQA';
+  if (status === 'qa_pending') return 'IQA';
   // Rejection labels match the on-screen StatusBadge (label only,
   // no count). The Revision column carries the round number
   // separately, so duplicating it here would be misleading
   // — the CSV reader would think the count was part of the
   // status itself.
-  if (p.status === 'iqa_rejected') return 'IQA Rejected';
-  if (p.status === 'eqa_rejected') return 'EQA Rejected';
+  if (status === 'iqa_rejected') return 'IQA Rejected';
+  if (status === 'eqa_rejected') return 'EQA Rejected';
   // The three WIP flavours export with their own labels so the
   // CSV mirrors the dashboard exactly.
-  if (p.status === 'iqa_wip') return 'IQA WIP';
-  if (p.status === 'eqa_wip') return 'EQA WIP';
-  if (p.status === 'wip') return 'WIP';
-  if (p.status === 'client_review') return 'EQA';
+  if (status === 'iqa_wip') return 'IQA WIP';
+  if (status === 'eqa_wip') return 'EQA WIP';
+  if (status === 'wip') return 'WIP';
+  if (status === 'client_review') return 'EQA';
   return 'Approved';
 }
 
@@ -850,6 +894,34 @@ function ProjectTable({
   // opts out (YTA) loses it.
   const showArtist = meta.showArtist !== false;
 
+  // Which products have their colourways expanded. Collapsed by
+  // default so the table still reads as one row per product —
+  // variants are detail, not the primary unit of work here.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Column count for the child rows' colSpan. Must track the
+  // conditional headers above or the indented row won't span the
+  // full table width.
+  const columnCount =
+    (showArtist ? 1 : 0) + // Artist
+    1 + // Project
+    1 + // References
+    1 + // Client
+    (meta.showRevision ? 1 : 0) +
+    1 + // Created
+    1 + // Uploaded
+    (meta.showAsset ? 1 : 0) +
+    1 + // Status
+    (hasAction ? 1 : 0);
+
   // Per-column sort. Artist/Project/Client/Revision sort by their
   // natural value; Created/Updated chronologically; Status by
   // pipeline rank. Cycles asc -> desc -> off (default order).
@@ -860,7 +932,7 @@ function ProjectTable({
     revision: (p) => p.revision_count,
     created: (p) => new Date(p.created_at),
     updated: (p) => new Date(p.updated_at),
-    status: (p) => statusRank(p.status),
+    status: (p) => statusRank(rollupStatus(p)),
   });
 
   return (
@@ -885,7 +957,8 @@ function ProjectTable({
       </thead>
       <tbody>
         {sorted.map((p) => (
-          <tr key={p.id}>
+          <Fragment key={p.id}>
+          <tr>
             {showArtist && (
               <td>
                 {p.assignee?.name || (
@@ -894,10 +967,72 @@ function ProjectTable({
               </td>
             )}
             <td>
-              <strong style={{ display: 'block' }}>{p.name}</strong>
-              <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                {p.slug}
-              </span>
+              {/* Disclosure toggle. The parent row already stands
+                  for the primary variant, so only the ADDITIONAL
+                  colourways are worth expanding to — a product
+                  with just its backfilled 'Original' gets no
+                  toggle at all. */}
+              {hasExtraVariants(p.variants) ? (
+                (() => {
+                  const extras = extraVariants(p.variants);
+                  return (
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(p.id)}
+                  aria-expanded={expanded.has(p.id)}
+                  aria-label={
+                    expanded.has(p.id) ? 'Hide variants' : 'Show variants'
+                  }
+                  title={`${extras.length} variant${
+                    extras.length === 1 ? '' : 's'
+                  }`}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    font: 'inherit',
+                    color: 'inherit',
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 6,
+                    textAlign: 'left',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      color: 'var(--text-faint)',
+                      fontSize: 10,
+                      transform: expanded.has(p.id)
+                        ? 'rotate(90deg)'
+                        : 'none',
+                      transition: 'transform 0.12s',
+                      display: 'inline-block',
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <span>
+                    <strong style={{ display: 'block' }}>{p.name}</strong>
+                    <span
+                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
+                    >
+                      {p.slug} · +{extras.length} variant
+                      {extras.length === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                </button>
+                  );
+                })()
+              ) : (
+                <>
+                  <strong style={{ display: 'block' }}>{p.name}</strong>
+                  <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+                    {p.slug}
+                  </span>
+                </>
+              )}
             </td>
             <td>
               <ReferenceThumb project={p} />
@@ -955,7 +1090,7 @@ function ProjectTable({
             )}
             <td>
               <StatusBadge
-                status={p.status}
+                status={rollupStatus(p)}
                 revisionCount={p.revision_count}
                 assigned={p.assigned_to !== null}
               />
@@ -1043,6 +1178,64 @@ function ProjectTable({
               </td>
             )}
           </tr>
+
+          {/* ---- Variant child rows ----
+              Indented under their product, showing each
+              colourway's own status and asset. Rendered as real
+              table rows (not a nested table) so the columns stay
+              aligned with the parent. */}
+          {expanded.has(p.id) &&
+            extraVariants(p.variants).map((v) => (
+              <tr
+                key={v.id}
+                style={{ background: 'var(--surface-2, transparent)' }}
+              >
+                {showArtist && <td />}
+                <td style={{ paddingLeft: 28 }}>
+                  <span
+                    style={{ color: 'var(--text-faint)', marginRight: 6 }}
+                    aria-hidden
+                  >
+                    └
+                  </span>
+                  <strong style={{ fontWeight: 600 }}>{v.name}</strong>
+                </td>
+                {/* References are shared across colourways, so
+                    there's nothing variant-specific to show. */}
+                <td />
+                <td />
+                {meta.showRevision && (
+                  <td style={{ color: 'var(--text-dim)' }}>
+                    {v.revision_count}
+                  </td>
+                )}
+                <td />
+                <DateCell value={v.updated_at} withTime />
+                {meta.showAsset && (
+                  <td>
+                    {(v.approved_glb_url || v.glb_url) && (
+                      <a
+                        className="crm-link"
+                        href={v.approved_glb_url || v.glb_url || '#'}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View GLB
+                      </a>
+                    )}
+                  </td>
+                )}
+                <td>
+                  <StatusBadge
+                    status={v.status}
+                    revisionCount={v.revision_count}
+                    assigned
+                  />
+                </td>
+                {hasAction && <td />}
+              </tr>
+            ))}
+          </Fragment>
         ))}
       </tbody>
     </table>
