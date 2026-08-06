@@ -116,7 +116,7 @@ export async function POST(
   // ----- Parent must exist -----
   const { data: project, error: pErr } = await supabase()
     .from('uflow_projects')
-    .select('id, slug, name, assigned_to')
+    .select('id, slug, name, status, assigned_to')
     .eq('id', id)
     .maybeSingle();
   if (pErr || !project) {
@@ -131,7 +131,7 @@ export async function POST(
   // then lands unassigned and can be allocated later.
   const { data: siblings, error: sErr } = await supabase()
     .from('uflow_project_variants')
-    .select('slug, position, assigned_to, is_primary')
+    .select('slug, position, assigned_to, is_primary, status')
     .eq('project_id', id);
   if (sErr) {
     console.error('[variants.create.siblings]', sErr);
@@ -150,6 +150,34 @@ export async function POST(
   const inheritedArtist =
     primary?.assigned_to ?? project.assigned_to ?? null;
 
+  // ----- Inherit the stage -----
+  // A new colourway on a product that's already underway is more
+  // work in progress, not a fresh draft. Starting it at 'draft'
+  // pulled the whole product back into YTS, which misrepresented
+  // a job the artist is actively building.
+  //
+  // It can't inherit verbatim, though: qa_pending, client_review
+  // and approved all mean "a GLB exists and is under review", and
+  // this variant has no model yet. Those clamp to 'wip' — the
+  // artist has something to build, and the upload path takes it
+  // to qa_pending from there.
+  //
+  // Rejected states clamp to their matching WIP flavour for the
+  // same reason: there's no feedback attached to a variant that
+  // has never been submitted.
+  //
+  // 'draft' is preserved so a colourway added to a job nobody has
+  // started still needs its Start click, same as the original.
+  const primaryStatus = primary?.status ?? project.status ?? 'draft';
+  const inheritedStatus =
+    primaryStatus === 'draft'
+      ? 'draft'
+      : primaryStatus === 'wip' ||
+        primaryStatus === 'iqa_wip' ||
+        primaryStatus === 'eqa_wip'
+      ? primaryStatus
+      : 'wip';
+
   // Append to the end of the QA switcher order.
   const nextPosition = existing.reduce(
     (max, v) => Math.max(max, v.position ?? 0),
@@ -157,17 +185,17 @@ export async function POST(
   ) + 1;
 
   // ----- Insert -----
-  // status 'draft' = the variant needs modelling. With an
-  // inherited artist that reads as YTS on their dashboard; with
-  // none it reads as YTA for allocation. Asset URLs stay null:
-  // the artist uploads a separate zip per variant.
+  // Status inherited from the primary (clamped above) so adding a
+  // colourway doesn't drag the product backwards in the pipeline.
+  // Asset URLs stay null: the artist uploads a separate zip per
+  // variant regardless of which stage it starts at.
   const { data: created, error: cErr } = await supabase()
     .from('uflow_project_variants')
     .insert({
       project_id: id,
       name,
       slug,
-      status: 'draft',
+      status: inheritedStatus,
       revision_count: 0,
       feedback_seen_revision: 0,
       assigned_to: inheritedArtist,

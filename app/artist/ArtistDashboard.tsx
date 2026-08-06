@@ -1,11 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { Fragment, useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import JSZip from 'jszip';
 import StatusBadge from '../components/StatusBadge';
 import Sidebar from '../components/Sidebar';
 import { crmFetch, crmPath } from '../lib/client-fetch';
+import {
+  rollupStatus,
+  anyVariantIn,
+  allVariantsApproved,
+  extraVariants,
+  hasExtraVariants,
+} from '../lib/variant-status';
 
 // ============================================================
 // Types — mirror the server's joined select shape
@@ -40,6 +47,23 @@ type Project = {
   brief: string | null;
   updated_at: string;
   client: { slug: string; name: string };
+  // Colourways. Each is separately startable and uploadable, so
+  // they render as child rows carrying their own actions.
+  variants?: Variant[];
+};
+
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: Project['status'];
+  revision_count: number;
+  feedback_seen_revision: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
 };
 
 type ReferenceImage = {
@@ -64,10 +88,6 @@ type ReferenceImage = {
 // treating that as 0 keeps it in the inbox rather than silently
 // hiding feedback.
 // ============================================================
-function isRejected(p: Project): boolean {
-  return p.status === 'iqa_rejected' || p.status === 'eqa_rejected';
-}
-
 function hasUnreadFeedback(p: Project): boolean {
   return (p.revision_count ?? 0) > (p.feedback_seen_revision ?? 0);
 }
@@ -132,56 +152,53 @@ export default function ArtistDashboard({
   // 'client_review' and 'eqa_rejected', since the row might come
   // back to the artist after admin triage).
   const activeProjects = useMemo(
-    () => projects.filter((p) => p.status !== 'approved'),
+    () => projects.filter((p) => !allVariantsApproved(p)),
     [projects]
   );
   const completedProjects = useMemo(
-    () => projects.filter((p) => p.status === 'approved'),
+    () => projects.filter((p) => allVariantsApproved(p)),
     [projects]
   );
-  // YTS: 'draft' rows assigned to this artist. (Unassigned drafts
-  // would be YTA, but those never reach an artist's dashboard —
-  // the server only returns rows where assigned_to = current user.)
+  // Queues use ANY-variant membership so a colourway needing work
+  // surfaces even when its siblings have moved on. A product can
+  // therefore appear in more than one tab — correct, since each
+  // tab is answering "is there work of this kind here?".
   const ytsProjects = useMemo(
-    () => projects.filter((p) => p.status === 'draft'),
+    () => projects.filter((p) => anyVariantIn(p, ['draft'])),
     [projects]
   );
   const wipProjects = useMemo(
     () =>
       projects.filter(
         (p) =>
-          p.status === 'wip' ||
-          p.status === 'iqa_wip' ||
-          p.status === 'eqa_wip' ||
+          anyVariantIn(p, ['wip', 'iqa_wip', 'eqa_wip']) ||
           // Rejected rows whose feedback the artist has already
           // read but not yet Started. They've left the Rejected
-          // inbox, and they can't sit in limbo — the action cell
-          // is status-driven, so Start still renders for them
-          // here. Admin still sees these under Rejected.
-          (isRejected(p) && !hasUnreadFeedback(p))
+          // inbox and can't sit in limbo — Start still renders
+          // here. Admin keeps seeing them under Rejected.
+          (anyVariantIn(p, ['iqa_rejected', 'eqa_rejected']) &&
+            !hasUnreadFeedback(p))
       ),
     [projects]
   );
   // Rejected tabs behave as an INBOX: a row shows only while its
-  // feedback is unread. Split by source now — admin's IQA
-  // pushback and the client's EQA pushback are different
-  // conversations and were previously collapsed into one tab.
+  // feedback is unread.
   const iqaRejectedProjects = useMemo(
     () =>
       projects.filter(
-        (p) => p.status === 'iqa_rejected' && hasUnreadFeedback(p)
+        (p) => anyVariantIn(p, ['iqa_rejected']) && hasUnreadFeedback(p)
       ),
     [projects]
   );
   const eqaRejectedProjects = useMemo(
     () =>
       projects.filter(
-        (p) => p.status === 'eqa_rejected' && hasUnreadFeedback(p)
+        (p) => anyVariantIn(p, ['eqa_rejected']) && hasUnreadFeedback(p)
       ),
     [projects]
   );
   const iqaProjects = useMemo(
-    () => projects.filter((p) => p.status === 'qa_pending'),
+    () => projects.filter((p) => anyVariantIn(p, ['qa_pending'])),
     [projects]
   );
 
@@ -263,6 +280,33 @@ export default function ArtistDashboard({
     }
   }
 
+  // Start a single colourway. Same endpoint as the product-level
+  // Start, with variant_id so only that variant leaves its queue.
+  async function startVariant(p: Project, v: Variant) {
+    const key = `${p.id}:${v.id}`;
+    if (starting[key]) return;
+    setStarting((s) => ({ ...s, [key]: true }));
+    setStartErr(null);
+    try {
+      const res = await crmFetch(`/api/projects/${p.id}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variant_id: v.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStartErr(data.error || 'Could not start this variant.');
+        return;
+      }
+      refreshList();
+      router.refresh();
+    } catch (e) {
+      setStartErr((e as Error).message);
+    } finally {
+      setStarting((s) => ({ ...s, [key]: false }));
+    }
+  }
+
   // ----- Title + subtitle per mode -----
   const pageTitle = isOverviewMode ? 'Overview' : isJobsMode ? 'Jobs' : 'My Jobs';
   const pageSub = isOverviewMode
@@ -323,6 +367,7 @@ export default function ArtistDashboard({
               initialTabHint={searchParams?.get('jobsTab')}
               starting={starting}
               onStart={startProject}
+              onStartVariant={startVariant}
               onOpenBrief={(p) => setViewBrief(p)}
               onUpload={(p) => setUploadFor(p)}
             />
@@ -342,6 +387,7 @@ export default function ArtistDashboard({
                 projects={activeProjects}
                 starting={starting}
                 onStart={startProject}
+                onStartVariant={startVariant}
                 onOpenBrief={(p) => setViewBrief(p)}
                 onUpload={(p) => setUploadFor(p)}
               />
@@ -537,6 +583,7 @@ function JobsTabs({
   initialTabHint,
   starting,
   onStart,
+  onStartVariant,
   onOpenBrief,
   onUpload,
 }: {
@@ -552,6 +599,7 @@ function JobsTabs({
   initialTabHint: string | null | undefined;
   starting: Record<string, boolean>;
   onStart: (p: Project) => void;
+  onStartVariant: (p: Project, v: Variant) => void;
   onOpenBrief: (p: Project) => void;
   onUpload: (p: Project) => void;
 }) {
@@ -700,6 +748,7 @@ function JobsTabs({
           projects={activeBucket}
           starting={starting}
           onStart={onStart}
+          onStartVariant={onStartVariant}
           onOpenBrief={onOpenBrief}
           onUpload={onUpload}
         />
@@ -716,15 +765,28 @@ function ActiveJobsTable({
   projects,
   starting,
   onStart,
+  onStartVariant,
   onOpenBrief,
   onUpload,
 }: {
   projects: Project[];
   starting: Record<string, boolean>;
   onStart: (p: Project) => void;
+  onStartVariant: (p: Project, v: Variant) => void;
   onOpenBrief: (p: Project) => void;
   onUpload: (p: Project) => void;
 }) {
+  // Which products have their colourways expanded.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <table className="crm-table">
       <thead>
@@ -743,12 +805,62 @@ function ActiveJobsTable({
       </thead>
       <tbody>
         {projects.map((p) => (
-          <tr key={p.id}>
+          <Fragment key={p.id}>
+          <tr>
             <td>
-              <strong style={{ display: 'block' }}>{p.name}</strong>
-              <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                {p.slug}
-              </span>
+              {hasExtraVariants(p.variants) ? (
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(p.id)}
+                  aria-expanded={expanded.has(p.id)}
+                  aria-label={
+                    expanded.has(p.id) ? 'Hide variants' : 'Show variants'
+                  }
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    font: 'inherit',
+                    color: 'inherit',
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 6,
+                    textAlign: 'left',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      color: 'var(--text-faint)',
+                      fontSize: 10,
+                      display: 'inline-block',
+                      transform: expanded.has(p.id)
+                        ? 'rotate(90deg)'
+                        : 'none',
+                      transition: 'transform 0.12s',
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <span>
+                    <strong style={{ display: 'block' }}>{p.name}</strong>
+                    <span
+                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
+                    >
+                      {p.slug} · +{extraVariants(p.variants).length} variant
+                      {extraVariants(p.variants).length === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                </button>
+              ) : (
+                <>
+                  <strong style={{ display: 'block' }}>{p.name}</strong>
+                  <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+                    {p.slug}
+                  </span>
+                </>
+              )}
             </td>
             <td>
               <a
@@ -790,7 +902,7 @@ function ActiveJobsTable({
             </td>
             <td>
               <StatusBadge
-                status={p.status}
+                status={rollupStatus(p)}
                 revisionCount={p.revision_count}
                 // The artist is always the assigned user on rows
                 // they can see, so a draft row here is always YTS.
@@ -850,6 +962,87 @@ function ActiveJobsTable({
               )}
             </td>
           </tr>
+
+          {/* ---- Variant child rows ----
+              Each colourway is its own piece of work: its own
+              Start, its own zip. Upload opens the shared modal,
+              which carries its own variant chooser, so there's no
+              second upload path to keep in sync. */}
+          {expanded.has(p.id) &&
+            extraVariants(p.variants).map((v) => {
+              const key = `${p.id}:${v.id}`;
+              return (
+                <tr
+                  key={v.id}
+                  style={{ background: 'var(--surface-2, transparent)' }}
+                >
+                  <td style={{ paddingLeft: 28 }}>
+                    <span
+                      aria-hidden
+                      style={{
+                        color: 'var(--text-faint)',
+                        marginRight: 6,
+                      }}
+                    >
+                      └
+                    </span>
+                    <strong style={{ fontWeight: 600 }}>{v.name}</strong>
+                  </td>
+                  {/* Brief and references belong to the product,
+                      not the colourway — use the parent's links. */}
+                  <td />
+                  <td />
+                  <td style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+                    {v.revision_count === 0 ? '\u2014' : v.revision_count}
+                  </td>
+                  <td>
+                    <StatusBadge
+                      status={v.status}
+                      revisionCount={v.revision_count}
+                      assigned
+                    />
+                  </td>
+                  <td style={{ color: 'var(--text-dim)' }}>
+                    {new Date(v.updated_at).toLocaleDateString()}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    {(v.status === 'draft' ||
+                      v.status === 'iqa_rejected' ||
+                      v.status === 'eqa_rejected') && (
+                      <button
+                        className="crm-btn"
+                        onClick={() => onStartVariant(p, v)}
+                        disabled={!!starting[key]}
+                      >
+                        {starting[key] ? 'Starting…' : 'Start'}
+                      </button>
+                    )}
+                    {(v.status === 'wip' ||
+                      v.status === 'iqa_wip' ||
+                      v.status === 'eqa_wip') && (
+                      <button className="crm-btn" onClick={() => onUpload(p)}>
+                        {v.revision_count === 0 ? 'Upload zip' : 'Re-upload'}
+                      </button>
+                    )}
+                    {v.status === 'qa_pending' && (
+                      <span
+                        style={{ color: 'var(--text-dim)', fontSize: 13 }}
+                      >
+                        Awaiting QA review
+                      </span>
+                    )}
+                    {v.status === 'client_review' && (
+                      <span
+                        style={{ color: 'var(--text-dim)', fontSize: 13 }}
+                      >
+                        With client
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </Fragment>
         ))}
       </tbody>
     </table>

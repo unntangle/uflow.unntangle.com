@@ -17,6 +17,8 @@ import {
 } from '../lib/use-table-sort';
 import {
   rollupStatus,
+  anyVariantIn,
+  allVariantsApproved,
   extraVariants,
   hasExtraVariants,
 } from '../lib/variant-status';
@@ -201,49 +203,42 @@ export default function AdminDashboard({
   }, [projects, selectedClientId]);
 
   // ----- Buckets (by stage) -----
-  // Every filter reads the ROLLED-UP status, not the product's
-  // own column, so a product with an outstanding colourway lands
-  // in the queue that colourway needs — e.g. Black sitting in IQA
-  // puts the product in the IQA tab even if the original was
-  // signed off weeks ago.
-  // YTA / YTS split a 'draft' row by whether an artist is on it.
+  // Queues use ANY-variant membership, not the roll-up: a product
+  // with Black awaiting QA and Original mid-revision belongs in
+  // BOTH the IQA and WIP tabs, because two different people each
+  // have something to do on it. Bucketing on the roll-up would
+  // hide the variant awaiting review entirely.
+  //
+  // Consequence: one product can appear in several tabs at once.
+  // That's accurate rather than duplication — the tab counts now
+  // measure outstanding work, not a partition of the job list.
+  //
+  // Approved is the exception: it needs EVERY colourway signed
+  // off, which is what the roll-up gives.
   const yta = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'draft' && p.assigned_to === null
+    (p) => anyVariantIn(p, ['draft']) && p.assigned_to === null
   );
   const yts = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'draft' && p.assigned_to !== null
+    (p) => anyVariantIn(p, ['draft']) && p.assigned_to !== null
   );
-  // WIP bucket holds all three "in progress" flavours: a fresh
-  // build (wip), a revision of admin's IQA feedback (iqa_wip),
-  // and a revision of client's EQA feedback (eqa_wip). One tab,
-  // three statuses — the StatusBadge differentiates them. The
-  // tab bar stays at 9 tabs.
-  const wip = visibleProjects.filter((p) => {
-    const s = rollupStatus(p);
-    return s === 'wip' || s === 'iqa_wip' || s === 'eqa_wip';
-  });
-  const iqa = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'qa_pending'
+  const wip = visibleProjects.filter((p) =>
+    anyVariantIn(p, ['wip', 'iqa_wip', 'eqa_wip'])
   );
-  const iqaRejected = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'iqa_rejected'
+  const iqa = visibleProjects.filter((p) =>
+    anyVariantIn(p, ['qa_pending'])
   );
-  const eqa = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'client_review'
+  const iqaRejected = visibleProjects.filter((p) =>
+    anyVariantIn(p, ['iqa_rejected'])
   );
-  const eqaRejected = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'eqa_rejected'
+  const eqa = visibleProjects.filter((p) =>
+    anyVariantIn(p, ['client_review'])
   );
-  // Open Jobs = the rollup view: everything that hasn't been
-  // signed off yet. Same row may also appear in one of the more
-  // specific stage tabs above; this tab is for admins who want
-  // the flat "what's still alive" picture.
-  const openJobs = visibleProjects.filter(
-    (p) => rollupStatus(p) !== 'approved'
+  const eqaRejected = visibleProjects.filter((p) =>
+    anyVariantIn(p, ['eqa_rejected'])
   );
-  const history = visibleProjects.filter(
-    (p) => rollupStatus(p) === 'approved'
-  );
+  // Open Jobs = the rollup view: everything not fully signed off.
+  const openJobs = visibleProjects.filter((p) => !allVariantsApproved(p));
+  const history = visibleProjects.filter((p) => allVariantsApproved(p));
 
   // Mode plumbing.
   const tabParam = searchParams?.get('tab');
@@ -906,21 +901,6 @@ function ProjectTable({
       return next;
     });
   }
-
-  // Column count for the child rows' colSpan. Must track the
-  // conditional headers above or the indented row won't span the
-  // full table width.
-  const columnCount =
-    (showArtist ? 1 : 0) + // Artist
-    1 + // Project
-    1 + // References
-    1 + // Client
-    (meta.showRevision ? 1 : 0) +
-    1 + // Created
-    1 + // Uploaded
-    (meta.showAsset ? 1 : 0) +
-    1 + // Status
-    (hasAction ? 1 : 0);
 
   // Per-column sort. Artist/Project/Client/Revision sort by their
   // natural value; Created/Updated chronologically; Status by

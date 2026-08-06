@@ -38,18 +38,35 @@ export default async function Page({
   const { data: project } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, glb_url, brief, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
+      'id, slug, name, status, revision_count, glb_url, brief, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at)'
     )
     .eq('id', id)
     .maybeSingle();
 
   if (!project) notFound();
 
-  // Wrong-state guard: only qa_pending or eqa_rejected projects
-  // belong here — those are the two admin-reviewable inboxes.
+  // Colourways, ordered for the switcher. PostgREST can't sort an
+  // embedded resource independently of its parent.
+  const variants = [...(project.variants ?? [])].sort(
+    (a, b) => (a.position ?? 0) - (b.position ?? 0)
+  );
+
+  // Reviewable = the two admin-actionable states. A variant in
+  // either one makes the PRODUCT reviewable, even when the
+  // product's own status column says otherwise — that column is
+  // only written on the legacy single-model path, so it goes
+  // stale as soon as a colourway moves on its own.
+  const REVIEWABLE = ['qa_pending', 'eqa_rejected'];
+  const reviewableVariants = variants.filter((v) =>
+    REVIEWABLE.includes(v.status)
+  );
+
+  // Wrong-state guard. Bounce back to the Overview only when
+  // NOTHING here is reviewable — neither the product itself nor
+  // any of its colourways.
   if (
-    project.status !== 'qa_pending' &&
-    project.status !== 'eqa_rejected'
+    !REVIEWABLE.includes(project.status) &&
+    reviewableVariants.length === 0
   ) {
     redirect('/admin');
   }
@@ -84,6 +101,7 @@ export default async function Page({
         assignee: a ?? null,
       }}
       references={references ?? []}
+      variants={variants}
       currentUser={{ name: user.name, role: user.role as 'admin' }}
     />
   );

@@ -34,13 +34,94 @@ export const runtime = 'nodejs';
 // ============================================================
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const auth = await requireApiUser('3d_artist');
   if (auth instanceof NextResponse) return auth;
 
   const { id } = await params;
+
+  // Optional variant target. Omitted = the product row (legacy
+  // single-model path), so existing callers are unaffected.
+  let reqBody: { variant_id?: string } = {};
+  try {
+    reqBody = await req.json();
+  } catch {
+    // No body is fine.
+  }
+  const variantId = reqBody.variant_id;
+
+  // ----- Variant path -----
+  // Each colourway starts independently: acknowledging feedback
+  // on Grey shouldn't drag Black out of its own queue.
+  if (variantId) {
+    const { data: variant, error: vErr } = await supabase()
+      .from('uflow_project_variants')
+      .select('id, project_id, status, assigned_to')
+      .eq('id', variantId)
+      .maybeSingle();
+
+    if (vErr || !variant) {
+      return NextResponse.json({ error: 'Variant not found.' }, { status: 404 });
+    }
+    if (variant.project_id !== id) {
+      return NextResponse.json(
+        { error: 'That variant belongs to a different project.' },
+        { status: 400 }
+      );
+    }
+
+    // Ownership: the artist may hold the variant directly, or the
+    // product it belongs to.
+    const { data: parent } = await supabase()
+      .from('uflow_projects')
+      .select('assigned_to')
+      .eq('id', id)
+      .maybeSingle();
+    if (
+      variant.assigned_to !== auth.userId &&
+      parent?.assigned_to !== auth.userId
+    ) {
+      return NextResponse.json(
+        { error: 'This variant is not assigned to you.' },
+        { status: 403 }
+      );
+    }
+
+    if (
+      variant.status !== 'draft' &&
+      variant.status !== 'iqa_rejected' &&
+      variant.status !== 'eqa_rejected'
+    ) {
+      return NextResponse.json(
+        {
+          error: `Cannot start work \u2014 this variant is "${variant.status}".`,
+        },
+        { status: 400 }
+      );
+    }
+
+    const vFrom = variant.status;
+    const vNew =
+      vFrom === 'iqa_rejected' ? 'iqa_wip' :
+      vFrom === 'eqa_rejected' ? 'eqa_wip' :
+      'wip';
+
+    const { data: vUpdated, error: vuErr } = await supabase()
+      .from('uflow_project_variants')
+      .update({ status: vNew, updated_at: new Date().toISOString() })
+      .eq('id', variantId)
+      .eq('status', vFrom)
+      .select()
+      .single();
+
+    if (vuErr || !vUpdated) {
+      console.error('[projects.start.variant]', vuErr);
+      return NextResponse.json({ error: 'DB error' }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true, variant: vUpdated });
+  }
 
   // Verify ownership + state in one query, before the update,
   // so we can return a meaningful error code if either check fails.

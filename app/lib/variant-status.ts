@@ -73,6 +73,46 @@ export function rollupStatus(p: ProductLike): ProjectStatus {
   ).status;
 }
 
+// ------------------------------------------------------------
+// anyVariantIn
+//
+// Membership test for the ACTION QUEUES, which is a different
+// question from what rollupStatus answers.
+//
+// rollupStatus produces ONE summarising value for the badge and
+// for sorting. Using it to bucket tabs is wrong: a product with
+// Black awaiting QA and Original still in progress rolls up to
+// 'wip', so it never reaches the IQA tab and the variant awaiting
+// review becomes unreachable.
+//
+// The tabs answer "is there work of this kind here?", so a
+// product belongs in a queue when ANY of its colourways is in
+// that state. A product can legitimately appear in several tabs
+// at once — that's accurate, not a bug: two different people
+// each have something to do on it.
+//
+// Approved is the exception and is deliberately NOT expressed
+// here: a product is only finished when EVERY variant is, which
+// rollupStatus already gives (it returns 'approved' only when the
+// least advanced variant is approved).
+// ------------------------------------------------------------
+export function anyVariantIn(
+  p: ProductLike,
+  statuses: ProjectStatus[]
+): boolean {
+  const vs = p.variants ?? [];
+  // No variant rows — fall back to the product's own column so
+  // pre-migration data still buckets sensibly.
+  if (vs.length === 0) return statuses.includes(p.status);
+  return vs.some((v) => statuses.includes(v.status));
+}
+
+// True when every colourway is signed off. The only queue that
+// genuinely needs "all" rather than "any".
+export function allVariantsApproved(p: ProductLike): boolean {
+  return rollupStatus(p) === 'approved';
+}
+
 // Colourways excluding the primary. The parent row already stands
 // for the primary, so this is what a disclosure toggle should
 // count and what child rows should list — a product carrying only

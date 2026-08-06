@@ -34,11 +34,14 @@ export const metadata = {
 
 export default async function Page({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ variant?: string }>;
 }) {
   const user = await requireUser();
   const { id } = await params;
+  const sp = await searchParams;
 
   const { data: project } = await supabase()
     .from('uflow_projects')
@@ -59,15 +62,39 @@ export default async function Page({
 
   const c = Array.isArray(project.client) ? project.client[0] : project.client;
 
-  // Prefer the working GLB (what's being reviewed); fall back to
-  // the approved copy for already-signed-off projects.
-  const glbUrl = project.glb_url || project.approved_glb_url;
+  // ----- Variant target -----
+  // The review page appends ?variant=<id> so the reviewer sees the
+  // colourway they're actually deciding on. Without this the link
+  // would always show the product's own glb_url — i.e. someone
+  // could approve Black while looking at the original's model.
+  let glbUrl = project.glb_url || project.approved_glb_url;
+  let displayName = project.name;
+  let revisionCount = project.revision_count ?? 0;
+
+  if (sp.variant) {
+    const { data: variant } = await supabase()
+      .from('uflow_project_variants')
+      .select(
+        'id, project_id, name, glb_url, approved_glb_url, revision_count'
+      )
+      .eq('id', sp.variant)
+      .maybeSingle();
+
+    // Scoping is already done above via the parent project, but the
+    // variant must actually belong to it — otherwise a guessed id
+    // would render another product's model under this one's name.
+    if (!variant || variant.project_id !== id) notFound();
+
+    glbUrl = variant.glb_url || variant.approved_glb_url;
+    displayName = `${project.name} \u00b7 ${variant.name}`;
+    revisionCount = variant.revision_count ?? 0;
+  }
 
   return (
     <ModelViewerPage
-      name={project.name}
+      name={displayName}
       clientName={c?.name ?? ''}
-      revisionCount={project.revision_count ?? 0}
+      revisionCount={revisionCount}
       glbUrl={glbUrl}
     />
   );

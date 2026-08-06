@@ -40,6 +40,26 @@ type Reference = {
   created_at: string;
 };
 
+// A colourway under review. Each carries its own model and its
+// own revision count, and is approved or rejected independently
+// of its siblings.
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: Project['status'];
+  revision_count: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
+};
+
+// The two admin-actionable states. Anything else isn't the
+// admin's to decide on right now.
+const REVIEWABLE: Project['status'][] = ['qa_pending', 'eqa_rejected'];
+
 // ============================================================
 // QaReviewPage — full-page version of the old ReviewModal.
 //
@@ -64,14 +84,41 @@ type Reference = {
 export default function QaReviewPage({
   project,
   references,
+  variants,
   currentUser,
 }: {
   project: Project;
   references: Reference[];
+  variants: Variant[];
   currentUser: { name: string; role: 'admin' };
 }) {
   const router = useRouter();
   const dropRef = useRef<HTMLDivElement>(null);
+
+  // ---- Review target ----
+  // Only colourways actually awaiting a decision are selectable;
+  // offering an approved or in-progress one would just produce a
+  // 400 from the endpoint. When nothing is selectable we fall
+  // back to reviewing the product row itself, which is the legacy
+  // single-model path.
+  const reviewable = variants.filter((v) => REVIEWABLE.includes(v.status));
+  const [variantId, setVariantId] = useState<string | null>(
+    reviewable[0]?.id ?? null
+  );
+  const selected = reviewable.find((v) => v.id === variantId) ?? null;
+
+  // Everything below reads from the TARGET, not the product: the
+  // model shown, the revision number quoted in the confirmation,
+  // and the id sent with the decision. Reading any of these from
+  // the product would mean approving one colourway while looking
+  // at another's model.
+  const targetGlb = selected ? selected.glb_url : project.glb_url;
+  const targetRevision = selected
+    ? selected.revision_count
+    : project.revision_count;
+  const targetLabel = selected
+    ? `${project.name} \u00b7 ${selected.name}`
+    : project.name;
 
   const [files, setFiles] = useState<File[]>([]);
   const [note, setNote] = useState('');
@@ -285,6 +332,11 @@ export default function QaReviewPage({
         body: JSON.stringify({
           image_urls: imageUrls,
           note: note.trim() || undefined,
+          // Scopes the decision to the selected colourway, so its
+          // siblings keep their own status and the feedback
+          // screenshots attach to the right variant. Null falls
+          // back to the product row.
+          variant_id: variantId,
         }),
       });
       const data = await res.json();
@@ -364,7 +416,7 @@ export default function QaReviewPage({
                   textOverflow: 'ellipsis',
                 }}
               >
-                {project.client.name} · Revision {project.revision_count}
+                {project.client.name} · Revision {targetRevision}
                 {project.assignee ? ` · Artist: ${project.assignee.name}` : ''}
               </p>
             </div>
@@ -377,10 +429,14 @@ export default function QaReviewPage({
                 flexShrink: 0,
               }}
             >
-              {project.glb_url && (
+              {targetGlb && (
                 <a
                   className="crm-btn"
-                  href={crmPath(`/admin/qa/${project.id}/model`)}
+                  href={crmPath(
+                    `/admin/qa/${project.id}/model${
+                      selected ? `?variant=${selected.id}` : ''
+                    }`
+                  )}
                   target="_blank"
                   rel="noreferrer"
                   title="Open the 3D model full-screen in a new tab"
@@ -435,6 +491,98 @@ export default function QaReviewPage({
             <div className="crm-error" style={{ marginBottom: 16 }}>
               {downloadRefsErr}
             </div>
+          )}
+
+          {/* ============================== Variant switcher ============================== */}
+          {/* Which colourway is being reviewed. Shown whenever
+              there's a variant awaiting a decision — including a
+              single one, because the reviewer must be able to see
+              WHAT they're approving, not infer it. Only reviewable
+              variants appear: an approved or in-progress sibling
+              isn't the admin's to decide on. */}
+          {reviewable.length > 0 && (
+            <section
+              className="crm-card"
+              style={{ marginTop: 0, marginBottom: 8 }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    color: 'var(--text-dim)',
+                  }}
+                >
+                  Reviewing
+                </span>
+                {reviewable.map((v) => {
+                  const active = v.id === variantId;
+                  return (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => {
+                        if (busy) return;
+                        setVariantId(v.id);
+                        // Feedback images are queued against ONE
+                        // colourway. Switching target without
+                        // clearing them would attach screenshots of
+                        // Black's problems to Grey's rejection.
+                        setFiles([]);
+                        setConfirm(false);
+                        setErr(null);
+                      }}
+                      disabled={busy}
+                      style={{
+                        border: active
+                          ? '1px solid var(--accent)'
+                          : '1px solid var(--border)',
+                        background: active
+                          ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
+                          : 'transparent',
+                        borderRadius: 999,
+                        padding: '5px 12px',
+                        fontSize: 13,
+                        fontWeight: active ? 600 : 400,
+                        cursor: busy ? 'not-allowed' : 'pointer',
+                        color: 'inherit',
+                      }}
+                    >
+                      {v.name}
+                      {v.is_primary ? ' (original)' : ''}
+                      {v.revision_count > 0 && (
+                        <span
+                          style={{
+                            color: 'var(--text-faint)',
+                            marginLeft: 6,
+                            fontWeight: 400,
+                          }}
+                        >
+                          rev {v.revision_count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {!targetGlb && (
+                <p
+                  className="crm-error"
+                  style={{ marginTop: 12, marginBottom: 0 }}
+                >
+                  This variant has no uploaded model yet, so there&apos;s
+                  nothing to review.
+                </p>
+              )}
+            </section>
           )}
 
           {project.brief && (
@@ -780,8 +928,8 @@ export default function QaReviewPage({
                     fontSize: 13,
                   }}
                 >
-                  {project.client.name} · {project.name} · Revision{' '}
-                  {project.revision_count}
+                  {project.client.name} · {targetLabel} · Revision{' '}
+                  {targetRevision}
                 </p>
               </div>
               <button
@@ -808,11 +956,17 @@ export default function QaReviewPage({
                 <>
                   <strong>This will send the model to the client.</strong>
                   <p style={{ margin: '4px 0 0', color: 'var(--text-dim)' }}>
-                    Status will change to <strong>Client Review</strong>.
-                    The client will see the model in their dashboard and
-                    give final approval (or send it back with feedback).
-                    The model is NOT public yet — only the client's
-                    approval publishes it.
+                    <strong>{targetLabel}</strong> moves to{' '}
+                    <strong>Client Review</strong>. The client will see it in
+                    their dashboard and give final approval (or send it back
+                    with feedback). The model is NOT public yet — only the
+                    client&apos;s approval publishes it.
+                    {selected && (
+                      <>
+                        {' '}
+                        Other colourways of this product are unaffected.
+                      </>
+                    )}
                   </p>
                 </>
               ) : (
@@ -822,9 +976,12 @@ export default function QaReviewPage({
                     {files.length === 1 ? '' : 's'}.
                   </strong>
                   <p style={{ margin: '4px 0 0', color: 'var(--text-dim)' }}>
-                    Status will change to <strong>IQA Rejected</strong>. The
-                    artist will be asked to upload revision{' '}
-                    {project.revision_count + 1}.
+                    <strong>{targetLabel}</strong> moves to{' '}
+                    <strong>IQA Rejected</strong>. The artist will be asked
+                    to upload revision {targetRevision + 1}.
+                    {selected && (
+                      <> Other colourways of this product are unaffected.</>
+                    )}
                   </p>
                 </>
               )}

@@ -1,5 +1,6 @@
 import { requireUser } from '../lib/auth';
 import { supabase, ProjectStatus } from '../lib/supabase';
+import { sortVariants } from '../lib/variant-status';
 import ArtistDashboard from './ArtistDashboard';
 
 // ============================================================
@@ -32,6 +33,24 @@ type ProjectRow = {
   brief: string | null;
   updated_at: string;
   client: { slug: string; name: string } | { slug: string; name: string }[] | null;
+  // Colourways of this product. Each is its own piece of work
+  // with its own zip, so they render as child rows the artist can
+  // Start and Upload against individually.
+  variants:
+    | {
+        id: string;
+        name: string;
+        slug: string;
+        status: ProjectStatus;
+        revision_count: number;
+        feedback_seen_revision: number;
+        glb_url: string | null;
+        approved_glb_url: string | null;
+        is_primary: boolean;
+        position: number;
+        updated_at: string;
+      }[]
+    | null;
 };
 
 export default async function ArtistPage() {
@@ -40,7 +59,7 @@ export default async function ArtistPage() {
   const { data: projects, error } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, approved_glb_url, assigned_to, brief, updated_at, client:uflow_clients(slug, name)'
+      `id, slug, name, status, revision_count, feedback_seen_revision, zip_url, glb_url, approved_glb_url, assigned_to, brief, updated_at, client:uflow_clients(slug, name), variants:uflow_project_variants(id, name, slug, status, revision_count, feedback_seen_revision, glb_url, approved_glb_url, is_primary, position, updated_at)`
     )
     .eq('assigned_to', user.userId)
     .order('updated_at', { ascending: false });
@@ -62,7 +81,11 @@ export default async function ArtistPage() {
   const normalised = (projects || []).map((p) => {
     const row = p as ProjectRow;
     const c = Array.isArray(row.client) ? row.client[0] : row.client;
-    return { ...row, client: c ?? { slug: '', name: '' } };
+    return {
+      ...row,
+      client: c ?? { slug: '', name: '' },
+      variants: sortVariants(row.variants),
+    };
   });
 
   return (
