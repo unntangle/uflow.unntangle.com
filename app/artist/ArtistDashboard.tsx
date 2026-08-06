@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import JSZip from 'jszip';
 import StatusBadge from '../components/StatusBadge';
@@ -1163,6 +1163,61 @@ function UploadModal({
   const [stage, setStage] = useState<'idle' | 'checking' | 'signing' | 'uploading' | 'finalizing'>('idle');
   const [, startTransition] = useTransition();
 
+  // ---- Variant targeting ----
+  // A product may have several colourways, each with its own zip
+  // and its own QA cycle. The artist picks which one this upload
+  // is for; with a single variant (the common case) we select it
+  // automatically and hide the chooser entirely.
+  type UploadVariant = {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    is_primary: boolean;
+  };
+  const [variants, setVariants] = useState<UploadVariant[] | null>(null);
+  const [variantId, setVariantId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    crmFetch(`/api/projects/${project.id}/variants`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const list: UploadVariant[] = d.variants ?? [];
+        // Approved colourways are finished — don't offer them as
+        // an upload target; the endpoints would reject them.
+        const open = list.filter((v) => v.status !== 'approved');
+        setVariants(open);
+        setVariantId(open[0]?.id ?? null);
+      })
+      .catch(() => {
+        // No variants endpoint / table yet — fall back to the
+        // legacy single-model upload, which omits variant_id.
+        if (!cancelled) {
+          setVariants([]);
+          setVariantId(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  const selectedVariant =
+    variants?.find((v) => v.id === variantId) ?? null;
+
+  // Expected filename stem for this upload. Non-primary variants
+  // get their own namespace so a product's colourways don't all
+  // ship files with identical names:
+  //   primary → smart.zip   / smart.glb
+  //   "grey"  → smart-grey.zip / smart-grey.glb
+  const productBase = project.slug.split('-')[0].toLowerCase();
+  const assetBase =
+    selectedVariant && !selectedVariant.is_primary
+      ? `${productBase}-${selectedVariant.slug}`
+      : productBase;
+
   // Validate a chosen file before accepting it: must be a .zip and
   // within the size cap. Rejections surface inline (via setErr) so
   // the artist sees WHY nothing happened instead of a silent no-op.
@@ -1191,10 +1246,11 @@ function UploadModal({
   // tolerant, case-insensitive); textures inside fbx/ are not
   // name-checked since their filenames legitimately vary.
   async function validateZipStructure(f: File): Promise<string | null> {
-    // Product name = slug up to the first hyphen ("jupiter-chair"
-    // -> "jupiter"). Everything is compared lower-case so the
-    // artist isn't tripped up by capitalisation.
-    const product = project.slug.split('-')[0].toLowerCase();
+    // Filename stem for this upload target. For a colourway this
+    // is "<product>-<variant>" so Black and Grey don't both ship
+    // files called smart.glb — they'd be indistinguishable once
+    // downloaded, and would collide in the same R2 folder.
+    const product = assetBase;
 
     // 1. Outer zip filename.
     if (f.name.toLowerCase() !== product + '.zip') {
@@ -1276,7 +1332,15 @@ function UploadModal({
       setStage('signing');
       const signRes = await crmFetch(
         `/api/projects/${project.id}/upload-sign`,
-        { method: 'POST' }
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Tells the server which colourway this zip belongs to
+          // so the assets land in that variant's namespace and
+          // the status flips on the variant row, not the product.
+          // Null falls back to the legacy single-model path.
+          body: JSON.stringify({ variant_id: variantId }),
+        }
       );
       const signData = await signRes.json();
       if (!signRes.ok) {
@@ -1306,6 +1370,7 @@ function UploadModal({
           body: JSON.stringify({
             zip_url: zipUrl,
             revision: signData.revision,
+            variant_id: variantId,
           }),
         }
       );
@@ -1343,6 +1408,57 @@ function UploadModal({
           </div>
           <button className="crm-modal-close" onClick={onClose}>×</button>
         </div>
+
+        {/* Upload target. Always shown once variants are known,
+            even with a single option — the artist needs to see
+            WHICH colourway they're submitting, and the expected
+            filename below changes with it. A lone variant renders
+            as a read-only line rather than a pointless dropdown. */}
+        {variants && variants.length > 0 && (
+          <div className="crm-form-group" style={{ marginBottom: 4 }}>
+            <label className="crm-label">Uploading for</label>
+            {variants.length === 1 ? (
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <strong>{variants[0].name}</strong>
+                <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+                  {variants[0].is_primary
+                    ? 'the original — add a variant from the admin job row to submit a colourway'
+                    : 'variant'}
+                </span>
+              </p>
+            ) : (
+              <select
+                className="crm-input"
+                value={variantId ?? ''}
+                disabled={busy}
+                onChange={(e) => {
+                  setVariantId(e.target.value);
+                  // The expected filename changes with the target,
+                  // so a file picked for the previous variant is no
+                  // longer valid. Clear it rather than let the
+                  // artist submit and hit a confusing name error.
+                  setFile(null);
+                  setErr(null);
+                }}
+              >
+                {variants.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                    {v.is_primary ? ' (original)' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         <div
           className={`crm-dropzone ${drag ? 'is-drag' : ''}`}
@@ -1384,7 +1500,7 @@ function UploadModal({
           )}
         </div>
 
-        <UploadGuide zipName={`${project.slug.split('-')[0]}.zip`} />
+        <UploadGuide zipName={`${assetBase}.zip`} />
 
         {busy && stage === 'uploading' && (
           <div

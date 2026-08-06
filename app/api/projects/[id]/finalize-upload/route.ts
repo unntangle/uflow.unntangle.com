@@ -40,13 +40,14 @@ export async function POST(
 
   const { id } = await params;
 
-  let body: { zip_url?: string };
+  let body: { zip_url?: string; variant_id?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const { zip_url } = body;
+  const variantId = body.variant_id;
   if (!zip_url || !isOurPublicUrl(zip_url)) {
     // Refuse arbitrary URLs — only our R2 bucket is trusted.
     // (Legacy Cloudinary URLs are rejected on purpose; existing
@@ -60,7 +61,7 @@ export async function POST(
   // ----- 1. Load project + client -----
   const { data: project, error: pErr } = await supabase()
     .from('uflow_projects')
-    .select('id, slug, status, revision_count, glb_url, client:uflow_clients(slug)')
+    .select('id, slug, status, revision_count, glb_url, assigned_to, client:uflow_clients(slug)')
     .eq('id', id)
     .maybeSingle();
 
@@ -85,25 +86,72 @@ export async function POST(
     );
   }
 
-  // revision_count tracks REJECTION rounds, not uploads. An
-  // upload (first time or re-submission after rejection) doesn't
-  // advance the counter — only an admin IQA rejection does. So
-  // the rev folder used for this upload is the current counter:
-  //   0 = fresh first submission (no rejections yet)
-  //   N = the Nth re-submission, replacing what was rejected N times
-  // Re-uploads within the same rejection round overwrite the
-  // previous zip in that rev folder, which is what we want —
-  // the rejected version is being replaced.
-  const currentRevision = project.revision_count;
+  // ----- 1b. Resolve the variant target -----
+  // Mirrors upload-sign so the extracted assets land beside the
+  // zip the browser already PUT. Omitting variant_id keeps the
+  // legacy single-model path writing onto uflow_projects.
+  type VariantRow = {
+    id: string;
+    project_id: string;
+    slug: string;
+    status: string;
+    revision_count: number;
+    glb_url: string | null;
+    assigned_to: string | null;
+    is_primary: boolean;
+  };
+  let variant: VariantRow | null = null;
 
-  // Cache-busting upload sequence. Every finalize bumps the GLB
-  // filename's "_N" suffix so the new model gets a fresh public
-  // URL — otherwise a re-upload within the same revision round
-  // overwrites the same R2 key and QA / the client keep seeing
-  // the cached old model. We derive the next number from the
-  // current glb_url's suffix (".../Name_2.glb" -> 3); a missing
-  // or unsuffixed URL (first upload, or a legacy row) starts at 1.
-  const prevSeqMatch = project.glb_url?.match(/_(\d+)\.glb(?:[?#].*)?$/i);
+  if (variantId) {
+    const { data: v, error: vErr } = await supabase()
+      .from('uflow_project_variants')
+      .select(
+        'id, project_id, slug, status, revision_count, glb_url, assigned_to, is_primary'
+      )
+      .eq('id', variantId)
+      .maybeSingle();
+
+    if (vErr || !v) {
+      return NextResponse.json({ error: 'Variant not found.' }, { status: 404 });
+    }
+    if (v.project_id !== id) {
+      return NextResponse.json(
+        { error: 'That variant belongs to a different project.' },
+        { status: 400 }
+      );
+    }
+    const ownsVariant = v.assigned_to === auth.userId;
+    const ownsProject = project.assigned_to === auth.userId;
+    if (!ownsVariant && !ownsProject) {
+      return NextResponse.json(
+        { error: 'This variant is not assigned to you.' },
+        { status: 403 }
+      );
+    }
+    if (v.status === 'approved') {
+      return NextResponse.json(
+        { error: 'This variant is already approved.' },
+        { status: 400 }
+      );
+    }
+    variant = v as VariantRow;
+  }
+
+  // Asset namespace + revision come from whichever row owns this
+  // upload. Primary variants keep the bare project slug so their
+  // published URLs don't move.
+  const assetSlug =
+    variant && !variant.is_primary
+      ? `${project.slug}-${variant.slug}`
+      : project.slug;
+  const currentRevision = variant
+    ? variant.revision_count
+    : project.revision_count;
+
+  // Cache-busting upload sequence, read from whichever row we're
+  // about to write.
+  const prevGlb = variant ? variant.glb_url : project.glb_url;
+  const prevSeqMatch = prevGlb?.match(/_(\d+)\.glb(?:[?#].*)?$/i);
   const uploadSeq = prevSeqMatch ? parseInt(prevSeqMatch[1], 10) + 1 : 1;
 
   // ----- 2. Extract + re-upload pieces -----
@@ -112,7 +160,7 @@ export async function POST(
     processed = await processArtistZipFromUrl(
       zip_url,
       cSlug,
-      project.slug,
+      assetSlug,
       currentRevision,
       uploadSeq
     );
@@ -124,23 +172,34 @@ export async function POST(
     );
   }
 
-  // ----- 3. Update project row -----
+  // ----- 3. Update the owning row -----
   // NOTE: revision_count is deliberately NOT written here. It's
   // owned by the rejection path (POST /feedback) which is the
   // only place that advances it. The upload just sets the new
   // file URLs and flips status back to qa_pending for re-review.
-  const { error: uErr } = await supabase()
-    .from('uflow_projects')
-    .update({
-      status: 'qa_pending',
-      zip_url,
-      glb_url: processed.glbUrl,
-      fbx_url: processed.fbxUrl,
-      gltf_url: processed.gltfUrl,
-      spp_url: processed.sppUrl,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id);
+  //
+  // When a variant was targeted we write ONLY the variant row.
+  // The product's own status is a roll-up of its variants, so
+  // flipping uflow_projects here would let one colourway drag
+  // the whole product into IQA while its siblings are untouched.
+  const assetPatch = {
+    status: 'qa_pending',
+    zip_url,
+    glb_url: processed.glbUrl,
+    fbx_url: processed.fbxUrl,
+    gltf_url: processed.gltfUrl,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: uErr } = variant
+    ? await supabase()
+        .from('uflow_project_variants')
+        .update(assetPatch)
+        .eq('id', variant.id)
+    : await supabase()
+        .from('uflow_projects')
+        .update({ ...assetPatch, spp_url: processed.sppUrl })
+        .eq('id', id);
 
   if (uErr) {
     console.error('[finalize-upload] db update', uErr);
@@ -149,6 +208,7 @@ export async function POST(
 
   return NextResponse.json({
     ok: true,
+    variant_id: variant?.id ?? null,
     revision: currentRevision,
     upload_seq: uploadSeq,
     status: 'qa_pending',

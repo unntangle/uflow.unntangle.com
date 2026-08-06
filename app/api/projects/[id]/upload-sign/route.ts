@@ -29,7 +29,7 @@ export const runtime = 'nodejs';
 // ============================================================
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const auth = await requireApiUser('3d_artist');
@@ -37,10 +37,21 @@ export async function POST(
 
   const { id } = await params;
 
+  // Optional variant target. Omitted = the product's primary
+  // variant (legacy single-model behaviour), so existing callers
+  // keep working unchanged.
+  let body: { variant_id?: string } = {};
+  try {
+    body = await req.json();
+  } catch {
+    // No body is fine — treat as "primary variant".
+  }
+  const variantId = body.variant_id;
+
   // ----- Load project + client -----
   const { data: project, error: pErr } = await supabase()
     .from('uflow_projects')
-    .select('id, slug, status, revision_count, client:uflow_clients(slug)')
+    .select('id, slug, status, revision_count, assigned_to, client:uflow_clients(slug)')
     .eq('id', id)
     .maybeSingle();
 
@@ -65,20 +76,60 @@ export async function POST(
     );
   }
 
-  // revision_count tracks REJECTION rounds, not uploads. The
-  // upload lives in the rev folder matching the current counter:
-  //   0 = first submission, never rejected
-  //   N = re-submission after N rejections
-  // Re-uploads within the same rejection round overwrite the
-  // previous zip at the same key (single source.zip per rev
-  // folder), which is desired — the rejected version is being
-  // superseded by the corrected one.
-  const currentRevision = project.revision_count;
+  // ----- Resolve the variant being uploaded for -----
+  // Assets are namespaced per variant so nothing collides:
+  //   primary      → <client>/smart/uploads/rev-N/
+  //   "grey"       → <client>/smart-grey/uploads/rev-N/
+  // The primary keeps the bare project slug so already-published
+  // models and their public URLs are untouched.
+  let assetSlug = project.slug;
+  let currentRevision = project.revision_count;
 
-  // The zip lands at <client>/<slug>/uploads/rev-N/source.zip.
+  if (variantId) {
+    const { data: variant, error: vErr } = await supabase()
+      .from('uflow_project_variants')
+      .select('id, project_id, slug, status, revision_count, assigned_to, is_primary')
+      .eq('id', variantId)
+      .maybeSingle();
+
+    if (vErr || !variant) {
+      return NextResponse.json({ error: 'Variant not found.' }, { status: 404 });
+    }
+    // Guard against a variant id from a different product being
+    // passed in to write into this project's namespace.
+    if (variant.project_id !== id) {
+      return NextResponse.json(
+        { error: 'That variant belongs to a different project.' },
+        { status: 400 }
+      );
+    }
+    // The artist must hold either this specific variant or the
+    // product itself — variants can be split off to a different
+    // artist than the one on the parent.
+    const ownsVariant = variant.assigned_to === auth.userId;
+    const ownsProject = project.assigned_to === auth.userId;
+    if (!ownsVariant && !ownsProject) {
+      return NextResponse.json(
+        { error: 'This variant is not assigned to you.' },
+        { status: 403 }
+      );
+    }
+    if (variant.status === 'approved') {
+      return NextResponse.json(
+        { error: 'This variant is already approved.' },
+        { status: 400 }
+      );
+    }
+    assetSlug = variant.is_primary
+      ? project.slug
+      : `${project.slug}-${variant.slug}`;
+    currentRevision = variant.revision_count;
+  }
+
+  // The zip lands at <client>/<assetSlug>/uploads/rev-N/source.zip.
   // Fixed filename so each revision has exactly one source zip;
   // the browser is told to PUT to this key.
-  const key = uploadKey(cSlug, project.slug, currentRevision, 'source.zip');
+  const key = uploadKey(cSlug, assetSlug, currentRevision, 'source.zip');
 
   try {
     const { url, publicUrl } = await signUploadUrl({

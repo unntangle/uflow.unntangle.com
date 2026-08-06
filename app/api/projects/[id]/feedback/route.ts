@@ -52,28 +52,81 @@ export async function POST(
   if (pErr || !project) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
-  if (project.status !== 'qa_pending' && project.status !== 'eqa_rejected') {
-    return NextResponse.json(
-      {
-        error: `Project is "${project.status}" — only "qa_pending" or "eqa_rejected" projects can be reviewed by admin.`,
-      },
-      { status: 400 }
-    );
-  }
-  if (!project.glb_url) {
-    return NextResponse.json(
-      { error: 'Project has no GLB to review.' },
-      { status: 400 }
-    );
-  }
 
   // ----- Parse JSON body -----
-  let body: { image_urls?: unknown; note?: unknown };
+  let body: { image_urls?: unknown; note?: unknown; variant_id?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const variantId =
+    typeof body.variant_id === 'string' ? body.variant_id : null;
+
+  // ----- Resolve the review target -----
+  // Each colourway is approved or rejected on its own, so the
+  // decision lands on the variant row. Without variant_id we fall
+  // back to the product row (legacy single-model behaviour).
+  type ReviewTarget = {
+    table: 'uflow_projects' | 'uflow_project_variants';
+    rowId: string;
+    status: string;
+    revisionCount: number;
+    glbUrl: string | null;
+    label: string;
+  };
+  let target: ReviewTarget = {
+    table: 'uflow_projects',
+    rowId: project.id,
+    status: project.status,
+    revisionCount: project.revision_count,
+    glbUrl: project.glb_url,
+    label: project.name,
+  };
+
+  if (variantId) {
+    const { data: variant, error: vErr } = await supabase()
+      .from('uflow_project_variants')
+      .select('id, project_id, name, status, revision_count, glb_url')
+      .eq('id', variantId)
+      .maybeSingle();
+    if (vErr || !variant) {
+      return NextResponse.json({ error: 'Variant not found.' }, { status: 404 });
+    }
+    if (variant.project_id !== id) {
+      return NextResponse.json(
+        { error: 'That variant belongs to a different project.' },
+        { status: 400 }
+      );
+    }
+    target = {
+      table: 'uflow_project_variants',
+      rowId: variant.id,
+      status: variant.status,
+      revisionCount: variant.revision_count,
+      glbUrl: variant.glb_url,
+      label: `${project.name} \u00b7 ${variant.name}`,
+    };
+  }
+
+  // State + asset guards run against the TARGET, not the product.
+  // A product may sit in any status while one of its colourways
+  // is the thing actually under review.
+  if (target.status !== 'qa_pending' && target.status !== 'eqa_rejected') {
+    return NextResponse.json(
+      {
+        error: `"${target.label}" is "${target.status}" \u2014 only "qa_pending" or "eqa_rejected" can be reviewed by admin.`,
+      },
+      { status: 400 }
+    );
+  }
+  if (!target.glbUrl) {
+    return NextResponse.json(
+      { error: `"${target.label}" has no GLB to review.` },
+      { status: 400 }
+    );
+  }
+
   const rawUrls = Array.isArray(body.image_urls) ? body.image_urls : [];
   const note =
     typeof body.note === 'string' && body.note.trim() ? body.note.trim() : null;
@@ -92,7 +145,7 @@ export async function POST(
   //   rev_count was 1, rejection bumps to 2 → feedback tagged 2
   // Symmetric with where the artist's NEXT upload will live
   // (uploads/rev-N/source.zip with revision_count=N).
-  const nextRevisionCount = project.revision_count + 1;
+  const nextRevisionCount = target.revisionCount + 1;
 
   // ============================================================
   // Branch A: REJECT
@@ -100,6 +153,9 @@ export async function POST(
   if (imageUrls.length > 0) {
     const rows = imageUrls.map((url) => ({
       project_id: id,
+      // Scope the screenshots to the colourway they describe, so
+      // the artist opening Grey's feedback doesn't see Black's.
+      variant_id: variantId,
       revision: nextRevisionCount,
       image_url: url,
       note,
@@ -117,15 +173,19 @@ export async function POST(
     }
 
     const { error: uErr } = await supabase()
-      .from('uflow_projects')
+      .from(target.table)
       .update({
         status: 'iqa_rejected',
         // Advance the rejection counter. This is the ONLY path
         // that writes revision_count — uploads don't touch it.
         revision_count: nextRevisionCount,
+        // A fresh rejection is unread by definition, so reset the
+        // artist's marker. Without this, an artist who had read
+        // round 1 would never see round 2 land in their inbox.
+        feedback_seen_revision: target.revisionCount,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id);
+      .eq('id', target.rowId);
     if (uErr) {
       console.error('[feedback.reject] update', uErr);
       return NextResponse.json(
@@ -137,6 +197,7 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       decision: 'iqa_rejected',
+      variant_id: variantId,
       revision: nextRevisionCount,
       feedback_count: imageUrls.length,
     });
@@ -152,12 +213,12 @@ export async function POST(
   // doesn't accidentally publish unsigned-off models).
   // ============================================================
   const { error: uErr } = await supabase()
-    .from('uflow_projects')
+    .from(target.table)
     .update({
       status: 'client_review',
       updated_at: new Date().toISOString(),
     })
-    .eq('id', id);
+    .eq('id', target.rowId);
   if (uErr) {
     console.error('[feedback.approve] update', uErr);
     return NextResponse.json({ error: 'DB error' }, { status: 500 });
@@ -166,6 +227,7 @@ export async function POST(
   return NextResponse.json({
     ok: true,
     decision: 'client_review',
+    variant_id: variantId,
   });
 }
 
