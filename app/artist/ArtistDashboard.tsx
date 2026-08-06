@@ -1849,12 +1849,22 @@ function UploadGuide({ zipName }: { zipName: string }) {
             lineHeight: 1.5,
           }}
         >
-          <strong style={{ color: 'var(--danger)' }}>Required:</strong> name the
-          zip <code>{zipName}</code>, and give every file inside the same name
-          — <code>{base}</code> — keeping whatever extension it already has.
-          Don&apos;t change the extensions, only the part before the dot. Each
-          file goes in its matching folder above. If anything is missing or
-          misnamed, the upload is blocked. Max {MAX_UPLOAD_MB} MB total.
+          <strong style={{ color: 'var(--danger)' }}>Required:</strong> name
+          everything{' '}
+          <strong
+            style={{
+              fontSize: 15,
+              color: 'var(--text)',
+              fontFamily:
+                'var(--crm-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+            }}
+          >
+            {base}
+          </strong>{' '}
+          — the zip and every file inside it. Keep each file&apos;s own
+          extension; only change the part before the dot. Each file goes in its
+          matching folder above. If anything is missing or misnamed, the upload
+          is blocked. Max {MAX_UPLOAD_MB} MB total.
         </div>
       </div>
     </div>
