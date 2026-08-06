@@ -84,14 +84,13 @@ export default function EditAdminJobForm({
   const [busy, setBusy] = useState(false);
 
   // ---- Variants ----
-  // Unlike everything else on this form, variants are managed
-  // LIVE rather than on Save: the job already exists, so a new
-  // colourway can be POSTed straight away. Deferring them would
-  // mean an admin could add a variant, hit Cancel, and be unsure
-  // whether it landed.
+  // Staged like the reference images: Add queues a colourway
+  // locally, Save changes commits it. Keeps one mental model for
+  // the whole form — nothing on this page persists until Save,
+  // and Cancel discards everything.
   const [variants, setVariants] = useState<Variant[] | null>(null);
   const [variantDraft, setVariantDraft] = useState('');
-  const [addingVariant, setAddingVariant] = useState(false);
+  const [pendingVariants, setPendingVariants] = useState<string[]>([]);
   const [variantErr, setVariantErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -112,29 +111,35 @@ export default function EditAdminJobForm({
     };
   }, [project.id]);
 
-  async function addVariant() {
+  // Slugified comparison, matching what the server derives, so a
+  // clash is caught here rather than coming back as a 409 after
+  // the user has already pressed Save.
+  const variantKey = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+  function stageVariant() {
     const variantName = variantDraft.trim();
-    if (!variantName || addingVariant) return;
-    setVariantErr(null);
-    setAddingVariant(true);
-    try {
-      const res = await crmFetch(`/api/projects/${project.id}/variants`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: variantName }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setVariantErr(data.error || 'Could not add the variant.');
-        return;
-      }
-      setVariants((prev) => [...(prev ?? []), data.variant as Variant]);
-      setVariantDraft('');
-    } catch (e) {
-      setVariantErr((e as Error).message || 'Network error.');
-    } finally {
-      setAddingVariant(false);
+    if (!variantName) return;
+    const key = variantKey(variantName);
+    if (!key) {
+      setVariantErr('That name has no usable letters or numbers.');
+      return;
     }
+    const clashesSaved = (variants ?? []).some((v) => v.slug === key);
+    const clashesPending = pendingVariants.some(
+      (p) => variantKey(p) === key
+    );
+    if (clashesSaved || clashesPending) {
+      setVariantErr(`This product already has a "${key}" variant.`);
+      return;
+    }
+    setVariantErr(null);
+    setPendingVariants((prev) => [...prev, variantName]);
+    setVariantDraft('');
+  }
+
+  function removePendingVariantAt(i: number) {
+    setPendingVariants((prev) => prev.filter((_, idx) => idx !== i));
   }
 
   const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'saving'>(
@@ -164,7 +169,8 @@ export default function EditAdminJobForm({
   const briefChanged = (brief.trim() || null) !== (project.brief ?? null);
   const nameChanged = name.trim() !== project.name;
   const refsChanged = newRefs.length > 0 || removedRefIds.size > 0;
-  const dirty = nameChanged || briefChanged || refsChanged;
+  const variantsChanged = pendingVariants.length > 0;
+  const dirty = nameChanged || briefChanged || refsChanged || variantsChanged;
 
   async function submit() {
     setErr(null);
@@ -244,6 +250,36 @@ export default function EditAdminJobForm({
         setErr(data.error || 'Failed to save changes.');
         return;
       }
+
+      // ---- 3. Create any staged variants ----
+      // Sequential rather than parallel: each POST reads the
+      // product's existing variants to work out the next position
+      // and inherit the artist, so firing them at once would race
+      // and hand several variants the same position.
+      for (const variantName of pendingVariants) {
+        const vRes = await crmFetch(
+          `/api/projects/${project.id}/variants`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: variantName }),
+          }
+        );
+        if (!vRes.ok) {
+          const vData = await vRes.json().catch(() => ({}));
+          // The name/brief/reference edits are already saved at
+          // this point, so don't pretend the whole save failed —
+          // report exactly which variant didn't land and leave
+          // the user on the page to retry.
+          setErr(
+            `Saved the job, but "${variantName}" could not be added: ${
+              vData.error || 'unknown error'
+            }`
+          );
+          return;
+        }
+      }
+
       router.push(crmPath('/admin/jobs/list'));
       router.refresh();
     } catch (e) {
@@ -455,9 +491,8 @@ export default function EditAdminJobForm({
             {err && <div className="crm-error">{err}</div>}
 
             {/* ---- Variants ----
-                Saved immediately on Add, independently of the
-                Save changes button below, because the product
-                already exists and the API can take the write now. */}
+                Staged locally on Add and committed by Save
+                changes, so the whole form has one save model. */}
             <div className="crm-form-group" style={{ marginTop: 24 }}>
               <label className="crm-label">Variants</label>
               <p
@@ -469,8 +504,8 @@ export default function EditAdminJobForm({
               >
                 Colourways of this product. Each needs its own zip from the
                 artist and is approved on its own, but they all stay under this
-                one job and share the reference images above. Added variants
-                save straight away — no need to press Save changes.
+                one job and share the reference images above. New variants are
+                created when you press Save changes.
               </p>
 
               {variants === null ? (
@@ -485,7 +520,7 @@ export default function EditAdminJobForm({
                 </p>
               ) : (
                 <>
-                  {variants.length > 0 && (
+                  {(variants.length > 0 || pendingVariants.length > 0) && (
                     <div
                       style={{
                         display: 'flex',
@@ -520,6 +555,55 @@ export default function EditAdminJobForm({
                           />
                         </span>
                       ))}
+
+                      {/* Staged, not yet created. Dashed outline
+                          mirrors the reference images' "marked for
+                          removal" treatment so pending state reads
+                          consistently across the form. */}
+                      {pendingVariants.map((p, i) => (
+                        <span
+                          key={`pending-${p}`}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            border: '1px dashed var(--border)',
+                            borderRadius: 999,
+                            padding: '4px 10px',
+                            fontSize: 13,
+                            opacity: 0.8,
+                          }}
+                          title="Will be created when you press Save changes"
+                        >
+                          <strong style={{ fontWeight: 600 }}>{p}</strong>
+                          <span
+                            style={{
+                              color: 'var(--text-faint)',
+                              fontSize: 11,
+                            }}
+                          >
+                            after save
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removePendingVariantAt(i)}
+                            disabled={busy}
+                            aria-label={`Remove ${p}`}
+                            title="Remove"
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: 'inherit',
+                              font: 'inherit',
+                              lineHeight: 1,
+                              padding: 0,
+                            }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
                     </div>
                   )}
 
@@ -528,23 +612,23 @@ export default function EditAdminJobForm({
                       className="crm-input"
                       placeholder="e.g. Grey"
                       value={variantDraft}
-                      disabled={addingVariant}
+                      disabled={busy}
                       onChange={(e) => setVariantDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          addVariant();
+                          stageVariant();
                         }
                       }}
                     />
                     <button
                       type="button"
                       className="crm-btn crm-btn-secondary"
-                      onClick={addVariant}
-                      disabled={addingVariant || !variantDraft.trim()}
+                      onClick={stageVariant}
+                      disabled={busy || !variantDraft.trim()}
                       style={{ whiteSpace: 'nowrap' }}
                     >
-                      {addingVariant ? 'Adding…' : 'Add variant'}
+                      Add variant
                     </button>
                   </div>
 
