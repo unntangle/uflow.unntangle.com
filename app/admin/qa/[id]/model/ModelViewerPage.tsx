@@ -15,20 +15,87 @@
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Ruler, X } from 'lucide-react';
+import { Check, ChevronDown, Palette, RotateCcw, Ruler, X } from 'lucide-react';
 import ModelViewer, { type ModelViewerHandle } from '../../../../components/ModelViewer';
 
-export default function ModelViewerPage({
-  name,
-  clientName,
-  revisionCount,
-  glbUrl,
-}: {
+// One colourway as the viewer needs it: enough to label the option
+// and to swap the model without going back to the server.
+export type ViewerVariant = {
+  id: string;
   name: string;
-  clientName: string;
-  revisionCount: number;
+  // The primary colourway stands for the product itself, so its
+  // name is the product's name and the title doesn't repeat it.
+  isPrimary: boolean;
   glbUrl: string | null;
+  revisionCount: number;
+};
+
+export default function ModelViewerPage({
+  projectName,
+  clientName,
+  variants,
+  activeVariantId,
+  fallbackGlbUrl,
+  fallbackRevision,
+}: {
+  projectName: string;
+  clientName: string;
+  variants: ViewerVariant[];
+  activeVariantId: string | null;
+  fallbackGlbUrl: string | null;
+  fallbackRevision: number;
 }) {
+  // Which colourway is on screen. Switching is entirely client-side
+  // — every variant's GLB url is already in hand — so flipping
+  // between them is instant apart from the model download itself.
+  const [activeId, setActiveId] = useState<string | null>(activeVariantId);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Mirror of menuOpen readable from the (mount-once) key handler
+  // without making it re-subscribe on every toggle.
+  const menuOpenRef = useRef(false);
+  useEffect(() => {
+    menuOpenRef.current = menuOpen;
+  }, [menuOpen]);
+
+  const active = variants.find((v) => v.id === activeId) ?? null;
+
+  // Fall back to the product's own asset when there are no variant
+  // rows at all (pre-migration data), so this route keeps working
+  // exactly as it did before colourways existed.
+  const glbUrl = active ? active.glbUrl : fallbackGlbUrl;
+  const revisionCount = active ? active.revisionCount : fallbackRevision;
+  // Only a non-primary colourway earns a suffix — the primary one
+  // already carries the product's name, so appending it would read
+  // as "Zenpro Grey · Zenpro Grey".
+  const name =
+    active && !active.isPrimary
+      ? `${projectName} \u00b7 ${active.name}`
+      : projectName;
+
+  // Keep the URL in step with the visible colourway so a refresh,
+  // bookmark, or copied link lands on the same model. replaceState
+  // rather than a router push: this is a view toggle, not a
+  // navigation, and it shouldn't stack history entries.
+  function selectVariant(id: string) {
+    setActiveId(id);
+    setMenuOpen(false);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('variant', id);
+    window.history.replaceState(null, '', url.toString());
+  }
+
+  // Close the switcher on an outside click.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [menuOpen]);
+
   // Esc closes the tab (best-effort — window.close() only works on
   // tabs the script opened, which is the case here since the review
   // page opens this via target="_blank"/window.open). We fall back
@@ -45,7 +112,12 @@ export default function ModelViewerPage({
     // window.close() reliably allowed.
     setCanClose(typeof window !== 'undefined' && !!window.opener);
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') closeTab();
+      // Esc closes the open switcher first, then the tab — so a
+      // stray Esc while browsing colourways doesn't bounce the
+      // reviewer out of the viewer entirely.
+      if (e.key !== 'Escape') return;
+      if (menuOpenRef.current) setMenuOpen(false);
+      else closeTab();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -72,9 +144,10 @@ export default function ModelViewerPage({
         overflow: 'hidden',
       }}
     >
-      {/* Floating header — name + revision on the left, close on
-          the right. Sits over the model with a subtle backdrop so
-          text stays legible against light model backgrounds. */}
+      {/* Floating title — name + revision, top-left. Sits over the
+          model with a subtle backdrop so text stays legible against
+          light model backgrounds. The controls live in their own
+          vertical rail on the right (below). */}
       <div
         style={{
           position: 'absolute',
@@ -82,11 +155,8 @@ export default function ModelViewerPage({
           left: 0,
           right: 0,
           zIndex: 10,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 12,
           padding: '14px 18px',
+          paddingRight: 76,
           background:
             'linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0))',
           pointerEvents: 'none',
@@ -110,89 +180,133 @@ export default function ModelViewerPage({
             {clientName ? `${clientName} · ` : ''}Revision {revisionCount}
           </div>
         </div>
+      </div>
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            flexShrink: 0,
-            pointerEvents: 'auto',
-          }}
-        >
-          {glbUrl && (
-            <button
-              type="button"
-              onClick={() => setShowDims((v) => !v)}
-              title="Toggle dimensions & axis gizmo"
-              aria-pressed={showDims}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '8px 12px',
-                background: showDims ? '#0a0a0a' : 'rgba(255,255,255,0.9)',
-                border: `1px solid ${showDims ? '#0a0a0a' : '#d4d4d4'}`,
-                borderRadius: 8,
-                color: showDims ? '#fff' : '#0a0a0a',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              <Ruler size={14} strokeWidth={1.75} aria-hidden="true" />
-              <span>Dimensions</span>
-            </button>
-          )}
+      {/* Control rail — pinned to the right edge. The colourway
+          switcher and Close share the top row; the view controls
+          stack vertically beneath, collapsed to icons that reveal
+          their label on hover so they don't cover the model. */}
+      <div className="crm-viewer-rail">
+        {/* Top row: the colourway switcher sits as a full labelled
+            pill (you need to read which colourway you're on without
+            hovering), with Close beside it in red. */}
+        <div className="crm-viewer-rail-row">
+          {/* Only worth showing when there's more than one — a
+              single-variant product would just be a dropdown with
+              one option in it. */}
+          {variants.length > 1 && (
+            <div ref={menuRef} className="crm-viewer-rail-item">
+              <button
+                type="button"
+                className={`crm-viewer-rail-select${menuOpen ? ' is-open' : ''}`}
+                onClick={() => setMenuOpen((v) => !v)}
+                title="Switch colourway"
+                aria-haspopup="listbox"
+                aria-expanded={menuOpen}
+              >
+                <Palette size={15} strokeWidth={1.75} aria-hidden="true" />
+                <span className="crm-viewer-rail-select-label">
+                  {active?.name ?? 'Colourway'}
+                </span>
+                <ChevronDown
+                  size={14}
+                  strokeWidth={1.75}
+                  aria-hidden="true"
+                  className="crm-viewer-rail-chevron"
+                />
+              </button>
 
-          {glbUrl && (
-            <button
-              type="button"
-              onClick={() => viewerRef.current?.resetView()}
-              title="Reset view"
-              aria-label="Reset view"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '8px 12px',
-                background: 'rgba(255,255,255,0.9)',
-                border: '1px solid #d4d4d4',
-                borderRadius: 8,
-                color: '#0a0a0a',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              <RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />
-              <span>Reset view</span>
-            </button>
+              {menuOpen && (
+                <div
+                  className="crm-viewer-rail-menu"
+                  role="listbox"
+                  aria-label="Colourways"
+                >
+                  {variants.map((v) => {
+                    const isActive = v.id === activeId;
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        role="option"
+                        aria-selected={isActive}
+                        onClick={() => selectVariant(v.id)}
+                        className={`crm-viewer-rail-option${
+                          isActive ? ' is-active' : ''
+                        }`}
+                      >
+                        <span style={{ minWidth: 0 }}>
+                          <span
+                            style={{
+                              display: 'block',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {v.name}
+                          </span>
+                          <span style={{ fontSize: 11, color: '#737373' }}>
+                            {v.glbUrl
+                              ? `Revision ${v.revisionCount}`
+                              : 'No model yet'}
+                          </span>
+                        </span>
+                        {isActive && (
+                          <Check
+                            size={14}
+                            strokeWidth={2}
+                            aria-hidden="true"
+                            style={{ flexShrink: 0 }}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
 
           <button
             type="button"
+            className="crm-viewer-rail-btn is-danger"
             onClick={closeTab}
             title={canClose ? 'Close (Esc)' : 'Back (Esc)'}
             aria-label="Close viewer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '8px 12px',
-              background: 'rgba(255,255,255,0.9)',
-              border: '1px solid #d4d4d4',
-              borderRadius: 8,
-              color: '#0a0a0a',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
           >
-            <X size={14} strokeWidth={1.75} aria-hidden="true" />
-            <span>Close</span>
+            <X size={16} strokeWidth={2} aria-hidden="true" />
+            <span className="crm-viewer-rail-label">
+              {canClose ? 'Close' : 'Back'}
+            </span>
           </button>
         </div>
+
+        {glbUrl && (
+          <button
+            type="button"
+            className={`crm-viewer-rail-btn${showDims ? ' is-active' : ''}`}
+            onClick={() => setShowDims((v) => !v)}
+            title="Toggle dimensions & axis gizmo"
+            aria-pressed={showDims}
+          >
+            <Ruler size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span className="crm-viewer-rail-label">Dimensions</span>
+          </button>
+        )}
+
+        {glbUrl && (
+          <button
+            type="button"
+            className="crm-viewer-rail-btn"
+            onClick={() => viewerRef.current?.resetView()}
+            title="Reset view"
+            aria-label="Reset view"
+          >
+            <RotateCcw size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span className="crm-viewer-rail-label">Reset view</span>
+          </button>
+        )}
       </div>
 
       {/* The model itself, filling the whole viewport. ModelViewer

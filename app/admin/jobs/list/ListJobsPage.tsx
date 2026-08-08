@@ -2,7 +2,14 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil, Trash2 } from 'lucide-react';
+import {
+  Pencil,
+  Trash2,
+  ImageOff,
+  ChevronLeft,
+  ChevronRight,
+  X,
+} from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
 import {
@@ -17,10 +24,30 @@ import {
   statusRank,
 } from '../../../lib/use-table-sort';
 import {
-  rollupStatus,
   extraVariants,
   hasExtraVariants,
 } from '../../../lib/variant-status';
+
+// ============================================================
+// The parent row IS the original
+//
+// Same rule the Overview and the artist dashboard follow: a
+// product row names the product, and the primary variant IS the
+// product — so the row badges the primary's status.
+//
+// Not rollupStatus (the LEAST ADVANCED colourway), which would
+// have this page contradict the Overview about the same job: an
+// original sitting in IQA would be badged WIP here by an
+// unstarted sibling. Not uflow_projects.status either — legacy
+// since the variants migration and stale as soon as a colourway
+// moves on its own.
+//
+// Falls back to the product's own column when there are no
+// variant rows at all (pre-migration data).
+// ============================================================
+function primaryStatus(p: Project): ProjectStatus {
+  return (p.variants ?? []).find((v) => v.is_primary)?.status ?? p.status;
+}
 
 // ============================================================
 // Types
@@ -37,9 +64,17 @@ type Project = {
   client_id: string;
   client: { slug: string; name: string };
   assignee: { id: string; name: string; email: string } | null;
+  // Reference images attached at job creation. Rendered as a
+  // thumbnail strip in the Reference column.
+  references?: ProjectReference[];
   // Colourways. The parent row's status is derived from these;
   // they render as indented child rows when expanded.
   variants?: Variant[];
+};
+
+type ProjectReference = {
+  id: string;
+  image_url: string;
 };
 
 type Variant = {
@@ -94,6 +129,34 @@ export default function ListJobsPage({
   const [confirmTarget, setConfirmTarget] = useState<Project | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [delError, setDelError] = useState<string | null>(null);
+
+  // Reference lightbox. Holds the clicked job's images plus the
+  // index currently shown, so the arrows can step through that
+  // job's references without leaving the table.
+  const [lightbox, setLightbox] = useState<{
+    refs: ProjectReference[];
+    index: number;
+    label: string;
+  } | null>(null);
+
+  // Keyboard nav for the lightbox: Esc closes, arrows step.
+  useEffect(() => {
+    if (!lightbox) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setLightbox(null);
+      else if (e.key === 'ArrowLeft') {
+        setLightbox((l) =>
+          l ? { ...l, index: (l.index - 1 + l.refs.length) % l.refs.length } : l
+        );
+      } else if (e.key === 'ArrowRight') {
+        setLightbox((l) =>
+          l ? { ...l, index: (l.index + 1) % l.refs.length } : l
+        );
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox]);
 
   // Which products have their colourways expanded. Collapsed by
   // default so this stays a one-row-per-product index.
@@ -165,12 +228,14 @@ export default function ListJobsPage({
   const { sorted, sort, onSort } = useTableSort(visible, {
     name: (p) => p.name,
     artist: (p) => p.assignee?.name ?? null,
-    client: (p) => p.client.name,
     created: (p) => new Date(p.created_at),
     updated: (p) => new Date(p.updated_at),
-    // Derived from the variants, matching the Overview — the
+    // The original's status, matching the Overview — the
     // project's own column is stale once a colourway moves.
-    status: (p) => statusRank(rollupStatus(p)),
+    status: (p) => statusRank(primaryStatus(p)),
+    // Sort by how many references a job has, so jobs briefed
+    // without any imagery can be surfaced in one click.
+    references: (p) => p.references?.length ?? 0,
   });
 
   return (
@@ -183,8 +248,9 @@ export default function ListJobsPage({
             <div>
               <h1 className="crm-page-title">List Jobs</h1>
               <p className="crm-page-sub">
-                Every job across all statuses. Use the Edit column to
-                rename a job or update its brief.
+                Every job across all statuses. Reference thumbnails
+                enlarge on click. Use the Edit column to rename a job
+                or update its brief.
               </p>
             </div>
           </header>
@@ -215,8 +281,15 @@ export default function ListJobsPage({
               <thead>
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
+                  <SortableTh
+                    label="Reference"
+                    sortKey="references"
+                    sort={sort}
+                    onSort={onSort}
+                    align="center"
+                    style={{ width: 90 }}
+                  />
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
-                  <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
                   <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
                   <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
@@ -323,13 +396,24 @@ export default function ListJobsPage({
                       )}
                     </td>
                     <td>
+                      <ReferenceThumbs
+                        references={p.references}
+                        onOpen={(index) =>
+                          setLightbox({
+                            refs: p.references || [],
+                            index,
+                            label: p.name,
+                          })
+                        }
+                      />
+                    </td>
+                    <td>
                       {p.assignee?.name || (
                         <em style={{ color: 'var(--text-faint)' }}>
                           unassigned
                         </em>
                       )}
                     </td>
-                    <td>{p.client.name}</td>
                     <td style={{ color: 'var(--text-dim)' }}>
                       {new Date(p.created_at).toLocaleDateString()}
                     </td>
@@ -348,7 +432,7 @@ export default function ListJobsPage({
                           (artist on it) vs YTA (no artist) — matches
                           the Overview dashboard's badge behaviour. */}
                       <StatusBadge
-                        status={rollupStatus(p)}
+                        status={primaryStatus(p)}
                         revisionCount={p.revision_count}
                         assigned={p.assigned_to !== null}
                       />
@@ -411,6 +495,9 @@ export default function ListJobsPage({
                           </span>
                           <strong style={{ fontWeight: 600 }}>{v.name}</strong>
                         </td>
+                        {/* Reference / Artist / Created all belong to
+                            the parent product, so the colourway rows
+                            leave them blank. */}
                         <td />
                         <td />
                         <td />
@@ -438,6 +525,93 @@ export default function ListJobsPage({
                 ))}
               </tbody>
             </table>
+          )}
+
+          {/* Reference lightbox. Reuses the same .crm-lightbox
+              chrome as the QA references gallery so enlarging an
+              image looks identical wherever you do it. */}
+          {lightbox && lightbox.refs.length > 0 && (
+            <div
+              className="crm-lightbox"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Reference images for ${lightbox.label}`}
+              onClick={() => setLightbox(null)}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={lightbox.refs[lightbox.index].image_url}
+                alt={`Reference ${lightbox.index + 1} for ${lightbox.label}`}
+                onClick={(e) => e.stopPropagation()}
+                style={{ cursor: 'default' }}
+              />
+
+              {lightbox.refs.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    className="crm-lightbox-arrow is-prev"
+                    aria-label="Previous reference"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLightbox((l) =>
+                        l
+                          ? {
+                              ...l,
+                              index:
+                                (l.index - 1 + l.refs.length) % l.refs.length,
+                            }
+                          : l
+                      );
+                    }}
+                  >
+                    <ChevronLeft size={20} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="crm-lightbox-arrow is-next"
+                    aria-label="Next reference"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLightbox((l) =>
+                        l ? { ...l, index: (l.index + 1) % l.refs.length } : l
+                      );
+                    }}
+                  >
+                    <ChevronRight size={20} strokeWidth={1.75} aria-hidden="true" />
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="crm-lightbox-close"
+                aria-label="Close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLightbox(null);
+                }}
+              >
+                <X size={18} strokeWidth={1.75} aria-hidden="true" />
+              </button>
+
+              <p
+                style={{
+                  position: 'fixed',
+                  bottom: 18,
+                  left: 0,
+                  right: 0,
+                  textAlign: 'center',
+                  color: 'rgba(255,255,255,0.72)',
+                  fontSize: 12,
+                  margin: 0,
+                  pointerEvents: 'none',
+                }}
+              >
+                {lightbox.label} · {lightbox.index + 1} of{' '}
+                {lightbox.refs.length}
+              </p>
+            </div>
           )}
 
           {/* Hard-delete confirmation. Destructive + irreversible,
@@ -519,6 +693,70 @@ export default function ListJobsPage({
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+// ============================================================
+// ReferenceThumbs
+//
+// Single thumbnail for the Reference column — just the first
+// image, so every row stays the same width and the column reads
+// as a quiet visual identifier rather than a gallery. Clicking it
+// still opens the lightbox on the full set, so nothing is lost by
+// only previewing one.
+//
+// Jobs briefed without imagery render a muted placeholder rather
+// than an empty cell, so "no references" reads as a deliberate
+// state instead of a loading gap.
+// ============================================================
+function ReferenceThumbs({
+  references,
+  onOpen,
+}: {
+  references?: ProjectReference[];
+  onOpen: (index: number) => void;
+}) {
+  const refs = references || [];
+
+  if (refs.length === 0) {
+    return (
+      <span
+        title="This job has no reference images"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          color: 'var(--text-faint)',
+          fontSize: 12,
+        }}
+      >
+        <ImageOff size={14} strokeWidth={1.75} aria-hidden="true" />
+        <span>None</span>
+      </span>
+    );
+  }
+
+  return (
+    <div className="crm-ref-strip">
+      <button
+        type="button"
+        className="crm-ref-strip-thumb"
+        onClick={() => onOpen(0)}
+        title={
+          refs.length === 1
+            ? 'Click to enlarge'
+            : `Click to enlarge — ${refs.length} reference images`
+        }
+        aria-label={
+          refs.length === 1
+            ? 'Enlarge reference image'
+            : `Enlarge reference images (${refs.length} total)`
+        }
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={refs[0].image_url} alt="" loading="lazy" />
+      </button>
     </div>
   );
 }

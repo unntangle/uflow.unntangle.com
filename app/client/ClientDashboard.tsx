@@ -708,7 +708,12 @@ function ProjectTable({
                 {(p.approved_glb_url || p.glb_url) && (
                   <a
                     className="crm-link"
-                    href={p.approved_glb_url || p.glb_url!}
+                    // In-app viewer, not the raw R2 URL — a .glb
+                    // link makes the browser download the file
+                    // rather than show the model. Same route the
+                    // References link above already uses, which
+                    // scopes to the caller's own brand server-side.
+                    href={crmPath(`/admin/qa/${p.id}/model`)}
                     target="_blank"
                     rel="noreferrer"
                   >

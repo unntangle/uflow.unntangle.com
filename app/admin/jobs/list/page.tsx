@@ -41,6 +41,10 @@ type ProjectRow = {
     | { id: string; name: string; email: string }
     | { id: string; name: string; email: string }[]
     | null;
+  // Reference images attached at job-creation time. Pulled inline
+  // (id + url only) so the Reference column can render thumbnails
+  // without a second round-trip per row.
+  references: { id: string; image_url: string }[] | null;
   // Colourways, rendered as collapsible child rows. The status
   // shown on the parent is derived from these, not from the
   // project's own column.
@@ -66,7 +70,7 @@ export default async function AdminListJobsPage() {
   const { data: rawProjects, error } = await supabase()
     .from('uflow_projects')
     .select(
-      `id, slug, name, status, revision_count, assigned_to, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), ${VARIANT_SELECT}`
+      `id, slug, name, status, revision_count, assigned_to, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), references:uflow_project_references(id, image_url), ${VARIANT_SELECT}`
     )
     .order('updated_at', { ascending: false });
 
@@ -85,6 +89,7 @@ export default async function AdminListJobsPage() {
       ...r,
       client: c ?? { slug: '', name: '' },
       assignee: a,
+      references: r.references ?? [],
       variants: sortVariants(r.variants),
     };
   });

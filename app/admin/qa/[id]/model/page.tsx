@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { requireUser } from '../../../../lib/auth';
 import { supabase } from '../../../../lib/supabase';
+import { sortVariants } from '../../../../lib/variant-status';
 import ModelViewerPage from './ModelViewerPage';
 
 // ============================================================
@@ -62,40 +63,54 @@ export default async function Page({
 
   const c = Array.isArray(project.client) ? project.client[0] : project.client;
 
+  // ----- Colourways -----
+  // Fetched in full (not just the one in ?variant) so the viewer can
+  // offer a switcher and flip between them client-side, without a
+  // round-trip per colourway. Scoping is inherited from the parent
+  // project, which was already checked above.
+  const { data: rawVariants } = await supabase()
+    .from('uflow_project_variants')
+    .select(
+      'id, name, glb_url, approved_glb_url, revision_count, is_primary, position'
+    )
+    .eq('project_id', id);
+
+  const orderedVariants = sortVariants(rawVariants);
+
+  const variants = orderedVariants.map((v) => ({
+    id: v.id as string,
+    // The primary colourway is a backfill artefact — the migration
+    // named it 'Original', which tells a reviewer nothing. Show the
+    // product's own name instead, since that IS what the primary
+    // variant is.
+    name: v.is_primary ? project.name : (v.name as string),
+    isPrimary: !!v.is_primary,
+    glbUrl: (v.glb_url as string | null) || (v.approved_glb_url as string | null),
+    revisionCount: (v.revision_count as number | null) ?? 0,
+  }));
+
   // ----- Variant target -----
-  // The review page appends ?variant=<id> so the reviewer sees the
-  // colourway they're actually deciding on. Without this the link
-  // would always show the product's own glb_url — i.e. someone
+  // The review page appends ?variant=<id> so the reviewer opens on
+  // the colourway they're actually deciding on. Without this the
+  // link would always show the product's own glb_url — i.e. someone
   // could approve Black while looking at the original's model.
-  let glbUrl = project.glb_url || project.approved_glb_url;
-  let displayName = project.name;
-  let revisionCount = project.revision_count ?? 0;
+  //
+  // An id that isn't one of this product's colourways is a 404
+  // rather than a silent fallback: a guessed id must never render
+  // another product's model under this one's name.
+  if (sp.variant && !variants.some((v) => v.id === sp.variant)) notFound();
 
-  if (sp.variant) {
-    const { data: variant } = await supabase()
-      .from('uflow_project_variants')
-      .select(
-        'id, project_id, name, glb_url, approved_glb_url, revision_count'
-      )
-      .eq('id', sp.variant)
-      .maybeSingle();
-
-    // Scoping is already done above via the parent project, but the
-    // variant must actually belong to it — otherwise a guessed id
-    // would render another product's model under this one's name.
-    if (!variant || variant.project_id !== id) notFound();
-
-    glbUrl = variant.glb_url || variant.approved_glb_url;
-    displayName = `${project.name} \u00b7 ${variant.name}`;
-    revisionCount = variant.revision_count ?? 0;
-  }
+  const primary = orderedVariants.find((v) => v.is_primary);
+  const activeVariantId = sp.variant ?? (primary?.id as string | undefined) ?? null;
 
   return (
     <ModelViewerPage
-      name={displayName}
+      projectName={project.name}
       clientName={c?.name ?? ''}
-      revisionCount={revisionCount}
-      glbUrl={glbUrl}
+      variants={variants}
+      activeVariantId={activeVariantId}
+      fallbackGlbUrl={project.glb_url || project.approved_glb_url}
+      fallbackRevision={project.revision_count ?? 0}
     />
   );
 }

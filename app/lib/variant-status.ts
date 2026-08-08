@@ -123,6 +123,58 @@ export function extraVariants<T extends VariantLike>(
   return (variants ?? []).filter((v) => !v.is_primary);
 }
 
+// ------------------------------------------------------------
+// variantsIn / queueStatus
+//
+// These two exist because rollupStatus answers the wrong
+// question for a row that's sitting INSIDE a queue tab.
+//
+// Tabs are populated with anyVariantIn: a product lands in IQA
+// when ANY colourway is qa_pending. But the badge was drawn with
+// rollupStatus, which reports the LEAST ADVANCED colourway. For a
+// mixed product those are different states, so a job could sit
+// under "IQA" wearing a "WIP" badge — technically both true, and
+// unreadable.
+//
+// Inside a queue, the honest badge is the status that PUT the row
+// there. queueStatus returns that; outside a queue (Open Jobs,
+// Approved, or any caller that passes no statuses) it falls back
+// to the roll-up, which is the right summary when the tab isn't
+// asking about one particular stage.
+// ------------------------------------------------------------
+export function variantsIn<T extends VariantLike>(
+  variants: T[] | null | undefined,
+  statuses: ProjectStatus[]
+): T[] {
+  return (variants ?? []).filter((v) => statuses.includes(v.status));
+}
+
+export function queueStatus(
+  p: ProductLike,
+  statuses?: ProjectStatus[] | null
+): ProjectStatus {
+  if (!statuses || statuses.length === 0) return rollupStatus(p);
+  const matching = variantsIn(p.variants, statuses);
+  // No variant rows (pre-migration data) — the product's own
+  // column is what put it in the tab, so report that.
+  if (matching.length === 0) {
+    return statuses.includes(p.status) ? p.status : rollupStatus(p);
+  }
+  // Several colourways can match one tab (WIP covers three
+  // flavours). Least advanced wins, same tie-break rollupStatus
+  // uses, so the badge is stable rather than order-dependent.
+  return matching.reduce((least, v) =>
+    STATUS_RANK[v.status] < STATUS_RANK[least.status] ? v : least
+  ).status;
+}
+
+// How many colourways a product has in user terms. Products with
+// no variant rows count as one (themselves), so callers can
+// compare "N of M" without special-casing pre-migration data.
+export function variantCount(p: ProductLike): number {
+  return Math.max(1, (p.variants ?? []).length);
+}
+
 // True when the product has colourways beyond the original, i.e.
 // when a disclosure toggle is worth rendering at all.
 export function hasExtraVariants(
