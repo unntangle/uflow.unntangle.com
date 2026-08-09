@@ -27,6 +27,11 @@ import {
   extraVariants,
   hasExtraVariants,
 } from '../../../lib/variant-status';
+import {
+  categoryLabel,
+  complexityLabel,
+  complexityRank,
+} from '../../../lib/job-options';
 
 // ============================================================
 // The parent row IS the original
@@ -59,6 +64,10 @@ type Project = {
   status: ProjectStatus;
   revision_count: number;
   assigned_to: string | null;
+  // Classification, both nullable — jobs created before the
+  // 2026-08-09 migration have neither and render as an em dash.
+  complexity: string | null;
+  category: string | null;
   created_at: string;
   updated_at: string;
   client_id: string;
@@ -217,7 +226,11 @@ export default function ListJobsPage({
       if (selectedClientId && p.client_id !== selectedClientId) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) || p.slug.toLowerCase().includes(q)
+        p.name.toLowerCase().includes(q) ||
+        p.slug.toLowerCase().includes(q) ||
+        // Match the visible label, not the stored value, so typing
+        // "office chair" finds jobs stored as `office_chair`.
+        categoryLabel(p.category).toLowerCase().includes(q)
       );
     });
   }, [projects, selectedClientId, query]);
@@ -236,6 +249,12 @@ export default function ListJobsPage({
     // Sort by how many references a job has, so jobs briefed
     // without any imagery can be surfaced in one click.
     references: (p) => p.references?.length ?? 0,
+    // Category sorts A-Z on the LABEL, so "Office Chair" lands
+    // under O rather than under its stored `office_chair`.
+    category: (p) => (p.category ? categoryLabel(p.category) : null),
+    // Complexity sorts by effort band (easy -> complex), not
+    // alphabetically. Unclassified rows sink to the bottom.
+    complexity: (p) => complexityRank(p.complexity),
   });
 
   return (
@@ -262,7 +281,7 @@ export default function ListJobsPage({
             <input
               className="crm-input"
               type="search"
-              placeholder="Search by name or slug…"
+              placeholder="Search by name, slug or category…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -288,6 +307,18 @@ export default function ListJobsPage({
                     onSort={onSort}
                     align="center"
                     style={{ width: 90 }}
+                  />
+                  <SortableTh
+                    label="Category"
+                    sortKey="category"
+                    sort={sort}
+                    onSort={onSort}
+                  />
+                  <SortableTh
+                    label="Complexity"
+                    sortKey="complexity"
+                    sort={sort}
+                    onSort={onSort}
                   />
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
                   <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
@@ -407,6 +438,25 @@ export default function ListJobsPage({
                         }
                       />
                     </td>
+                    {/* Classification. Unset renders as a muted em
+                        dash so "not classified yet" reads as a real
+                        state rather than a rendering gap. */}
+                    <td
+                      style={{
+                        color: p.category ? undefined : 'var(--text-faint)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {categoryLabel(p.category)}
+                    </td>
+                    <td
+                      style={{
+                        color: p.complexity ? undefined : 'var(--text-faint)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {complexityLabel(p.complexity)}
+                    </td>
                     <td>
                       {p.assignee?.name || (
                         <em style={{ color: 'var(--text-faint)' }}>
@@ -495,9 +545,12 @@ export default function ListJobsPage({
                           </span>
                           <strong style={{ fontWeight: 600 }}>{v.name}</strong>
                         </td>
-                        {/* Reference / Artist / Created all belong to
-                            the parent product, so the colourway rows
-                            leave them blank. */}
+                        {/* Reference / Category / Complexity / Artist
+                            / Created all belong to the parent
+                            product, so the colourway rows leave them
+                            blank. */}
+                        <td />
+                        <td />
                         <td />
                         <td />
                         <td />

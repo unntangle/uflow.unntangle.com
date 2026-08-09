@@ -12,6 +12,7 @@
 // ============================================================
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { JobComplexity, JobCategory } from './job-options';
 
 let cached: SupabaseClient | null = null;
 
@@ -111,6 +112,13 @@ export type CrmProject = {
   approved_glb_url: string | null;
   assigned_to: string | null;
   brief: string | null;
+  // Classification set on the admin Create/Edit Job forms.
+  // Nullable: rows predating the 2026-08-09 migration are
+  // unclassified, and either field can be cleared back to that.
+  // Allowed values live in lib/job-options.ts, enforced by the
+  // CHECK constraints in that migration.
+  complexity: JobComplexity | null;
+  category: JobCategory | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

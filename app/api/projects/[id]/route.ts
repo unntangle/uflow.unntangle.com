@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../../lib/auth';
 import { supabase } from '../../../lib/supabase';
 import { isOurPublicUrl } from '../../../lib/r2';
+import {
+  isJobComplexity,
+  isJobCategory,
+  type JobComplexity,
+  type JobCategory,
+} from '../../../lib/job-options';
 
 export const runtime = 'nodejs';
 
@@ -81,6 +87,8 @@ export async function PATCH(
   let body: {
     name?: unknown;
     brief?: unknown;
+    complexity?: unknown;
+    category?: unknown;
     add_reference_image_urls?: unknown;
     remove_reference_ids?: unknown;
   };
@@ -93,7 +101,13 @@ export async function PATCH(
   // Build the update payload from only the recognised, present
   // fields. We validate `name` if supplied (non-empty after
   // trim); `brief` may be cleared to null.
-  const update: { name?: string; brief?: string | null; updated_at: string } = {
+  const update: {
+    name?: string;
+    brief?: string | null;
+    complexity?: JobComplexity | null;
+    category?: JobCategory | null;
+    updated_at: string;
+  } = {
     updated_at: new Date().toISOString(),
   };
 
@@ -128,6 +142,42 @@ export async function PATCH(
     }
   }
 
+  // Classification fields. Present-key semantics, same as brief:
+  // omitting the key leaves the column alone, sending null (or an
+  // empty string, which is what a blank <select> submits) clears
+  // it back to unclassified. Anything outside the shared
+  // vocabulary in lib/job-options is a 400 rather than a silent
+  // clear — the DB CHECK would reject it anyway, and a 400 says
+  // why. Editable at ANY status, like name and brief: these are
+  // labels, not pipeline state.
+  if ('complexity' in body) {
+    const raw = body.complexity;
+    if (raw === null || raw === '') {
+      update.complexity = null;
+    } else if (isJobComplexity(raw)) {
+      update.complexity = raw;
+    } else {
+      return NextResponse.json(
+        { error: 'Invalid complexity value.' },
+        { status: 400 }
+      );
+    }
+  }
+
+  if ('category' in body) {
+    const raw = body.category;
+    if (raw === null || raw === '') {
+      update.category = null;
+    } else if (isJobCategory(raw)) {
+      update.category = raw;
+    } else {
+      return NextResponse.json(
+        { error: 'Invalid category value.' },
+        { status: 400 }
+      );
+    }
+  }
+
   // Reference image mutations. Admins own the job, so (unlike the
   // client edit, which is draft-only) references are editable at
   // ANY status here. Added URLs must be from our R2 bucket; the
@@ -147,7 +197,13 @@ export async function PATCH(
 
   // Nothing meaningful to change -> 400 so the caller knows the
   // request was a no-op rather than silently "succeeding".
-  if (update.name === undefined && !('brief' in update) && !hasRefChange) {
+  if (
+    update.name === undefined &&
+    !('brief' in update) &&
+    !('complexity' in update) &&
+    !('category' in update) &&
+    !hasRefChange
+  ) {
     return NextResponse.json(
       { error: 'Provide a name, brief, or reference change to update.' },
       { status: 400 }
@@ -174,7 +230,7 @@ export async function PATCH(
     .from('uflow_projects')
     .update(update)
     .eq('id', id)
-    .select('id, name, brief')
+    .select('id, name, brief, complexity, category')
     .single();
 
   if (updErr) {

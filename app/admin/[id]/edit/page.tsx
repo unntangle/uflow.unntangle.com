@@ -43,7 +43,9 @@ export default async function EditAdminJobPage({ params }: EditPageProps) {
   // subtitle). No client_id scoping -- admins see all brands.
   const { data: project } = await supabase()
     .from('uflow_projects')
-    .select('id, slug, name, status, brief, client:uflow_clients(slug, name)')
+    .select(
+      'id, slug, name, status, brief, complexity, category, client:uflow_clients(slug, name)'
+    )
     .eq('id', id)
     .maybeSingle();
 
@@ -76,6 +78,11 @@ export default async function EditAdminJobPage({ params }: EditPageProps) {
         name: project.name,
         brief: project.brief,
         status: project.status,
+        // Nullable by design — rows created before the
+        // 2026-08-09 migration have neither, and the form shows
+        // them as an unselected placeholder rather than guessing.
+        complexity: project.complexity ?? null,
+        category: project.category ?? null,
       }}
       clientName={client?.name ?? 'Unknown brand'}
       brandSlug={client?.slug ?? ''}

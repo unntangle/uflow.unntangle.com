@@ -6,6 +6,11 @@ import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 import { ProjectStatus } from '../../../lib/supabase';
+import {
+  COMPLEXITY_OPTIONS,
+  CATEGORY_OPTIONS,
+  UNSET,
+} from '../../../lib/job-options';
 
 // ============================================================
 // Types
@@ -16,6 +21,10 @@ type ProjectLite = {
   name: string;
   brief: string | null;
   status: ProjectStatus;
+  // Both nullable: pre-migration rows are unclassified, and an
+  // admin is allowed to clear either one back to that state.
+  complexity: string | null;
+  category: string | null;
 };
 
 // An existing reference row already saved on the server. The
@@ -42,6 +51,11 @@ type Variant = {
 // Admin-facing edit form. Edits:
 //   - name  : freely editable, required (non-empty).
 //   - brief : freely editable, optional (clears to null).
+//   - complexity / category : the two classification dropdowns,
+//             both optional. Selecting the blank placeholder
+//             clears the column back to NULL. Editable at any
+//             status for the same reason `name` is — they're
+//             labels, not pipeline state.
 //   - reference images : add new ones (signed + uploaded to R2)
 //                        and/or remove existing ones. Admins own
 //                        the job, so references are editable at
@@ -72,6 +86,13 @@ export default function EditAdminJobForm({
 
   const [name, setName] = useState(project.name);
   const [brief, setBrief] = useState(project.brief ?? '');
+  // null (unclassified) maps to UNSET so the select lands on its
+  // placeholder rather than silently showing the first option as
+  // though it had been chosen.
+  const [complexity, setComplexity] = useState<string>(
+    project.complexity ?? UNSET
+  );
+  const [category, setCategory] = useState<string>(project.category ?? UNSET);
 
   // Two-bucket reference state (same shape as the client form):
   //   existingRefs   : already-saved rows; X toggles removal.
@@ -91,7 +112,24 @@ export default function EditAdminJobForm({
   const [variants, setVariants] = useState<Variant[] | null>(null);
   const [variantDraft, setVariantDraft] = useState('');
   const [pendingVariants, setPendingVariants] = useState<string[]>([]);
+  // Saved colourways marked for deletion this session. Staged
+  // rather than deleted on click, like the reference images — so
+  // an accidental click is undoable right up until Save, and
+  // Cancel throws the whole thing away.
+  const [removedVariantIds, setRemovedVariantIds] = useState<Set<string>>(
+    new Set()
+  );
   const [variantErr, setVariantErr] = useState<string | null>(null);
+
+  function toggleVariantRemoval(id: string) {
+    setVariantErr(null);
+    setRemovedVariantIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -125,7 +163,12 @@ export default function EditAdminJobForm({
       setVariantErr('That name has no usable letters or numbers.');
       return;
     }
-    const clashesSaved = (variants ?? []).some((v) => v.slug === key);
+    const clashesSaved = (variants ?? []).some(
+      // A colourway marked for deletion doesn't block the name:
+      // removals are committed before creations on save, so
+      // re-adding "Grey" in the same session works.
+      (v) => v.slug === key && !removedVariantIds.has(v.id)
+    );
     const clashesPending = pendingVariants.some(
       (p) => variantKey(p) === key
     );
@@ -169,8 +212,21 @@ export default function EditAdminJobForm({
   const briefChanged = (brief.trim() || null) !== (project.brief ?? null);
   const nameChanged = name.trim() !== project.name;
   const refsChanged = newRefs.length > 0 || removedRefIds.size > 0;
-  const variantsChanged = pendingVariants.length > 0;
-  const dirty = nameChanged || briefChanged || refsChanged || variantsChanged;
+  const variantsChanged =
+    pendingVariants.length > 0 || removedVariantIds.size > 0;
+  // Compare through the same empty -> null normalisation the
+  // PATCH applies, so re-picking the placeholder on an already-
+  // unclassified job doesn't count as a change.
+  const complexityChanged =
+    (complexity || null) !== (project.complexity ?? null);
+  const categoryChanged = (category || null) !== (project.category ?? null);
+  const dirty =
+    nameChanged ||
+    briefChanged ||
+    refsChanged ||
+    variantsChanged ||
+    complexityChanged ||
+    categoryChanged;
 
   async function submit() {
     setErr(null);
@@ -234,6 +290,12 @@ export default function EditAdminJobForm({
       const body: Record<string, unknown> = {
         name: trimmedName,
         brief: brief.trim() || null,
+        // Always sent. The PATCH uses present-key semantics, so
+        // including them unconditionally means clearing a select
+        // back to the placeholder actually nulls the column
+        // instead of being a no-op.
+        complexity: complexity || null,
+        category: category || null,
       };
       if (addUrls.length > 0) body.add_reference_image_urls = addUrls;
       if (removedRefIds.size > 0) {
@@ -251,7 +313,34 @@ export default function EditAdminJobForm({
         return;
       }
 
-      // ---- 3. Create any staged variants ----
+      // ---- 3. Delete any colourways marked for removal ----
+      // Before the creations below, so freeing up a slug and
+      // re-adding the same name in one session works. Sequential
+      // for the same reason the creates are: each one re-reads
+      // the product's variant rows server-side.
+      for (const removedId of removedVariantIds) {
+        const label =
+          (variants ?? []).find((v) => v.id === removedId)?.name ??
+          'that variant';
+        const dRes = await crmFetch(
+          `/api/projects/${project.id}/variants/${removedId}`,
+          { method: 'DELETE' }
+        );
+        if (!dRes.ok) {
+          const dData = await dRes.json().catch(() => ({}));
+          // The field edits above already saved, so report
+          // precisely what didn't land rather than implying the
+          // whole save failed.
+          setErr(
+            `Saved the job, but "${label}" could not be removed: ${
+              dData.error || 'unknown error'
+            }`
+          );
+          return;
+        }
+      }
+
+      // ---- 4. Create any staged variants ----
       // Sequential rather than parallel: each POST reads the
       // product's existing variants to work out the next position
       // and inherit the artist, so firing them at once would race
@@ -310,7 +399,7 @@ export default function EditAdminJobForm({
             <div>
               <h1 className="crm-page-title">Edit Job</h1>
               <p className="crm-page-sub">
-                {clientName} · Update the job name, brief, or reference
+                {clientName} · Update the job name, category, complexity, brief, or reference
                 images. The slug is locked once a job is created.
               </p>
             </div>
@@ -372,6 +461,44 @@ export default function EditAdminJobForm({
                 The slug is locked once a job is created. It&apos;s used in
                 the asset storage paths and the public model URL.
               </div>
+            </div>
+
+            <div className="crm-form-group">
+              <label className="crm-label">Category</label>
+              <select
+                className="crm-input"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                disabled={busy}
+              >
+                <option value={UNSET}>Select a category…</option>
+                {CATEGORY_OPTIONS.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="crm-form-group">
+              <label className="crm-label">Complexity</label>
+              <select
+                className="crm-input"
+                value={complexity}
+                onChange={(e) => setComplexity(e.target.value)}
+                disabled={busy}
+              >
+                <option value={UNSET}>Select a complexity…</option>
+                {COMPLEXITY_OPTIONS.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '6px 0 0' }}>
+                Editable at any status — these are labels, not pipeline
+                state. Pick the blank option to clear one.
+              </p>
             </div>
 
             <div className="crm-form-group">
@@ -505,7 +632,9 @@ export default function EditAdminJobForm({
                 Colourways of this product. Each needs its own zip from the
                 artist and is approved on its own, but they all stay under this
                 one job and share the reference images above. New variants are
-                created when you press Save changes.
+                created when you press Save changes. The original can&apos;t be
+                removed on its own — it is the product, so deleting it means
+                deleting the whole job from List Jobs.
               </p>
 
               {variants === null ? (
@@ -529,20 +658,28 @@ export default function EditAdminJobForm({
                         marginBottom: 10,
                       }}
                     >
-                      {variants.map((v) => (
+                      {variants.map((v) => {
+                        const marked = removedVariantIds.has(v.id);
+                        return (
                         <span
                           key={v.id}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 8,
-                            border: '1px solid var(--border)',
+                            border: marked
+                              ? '2px dashed var(--danger)'
+                              : '1px solid var(--border)',
                             borderRadius: 999,
                             padding: '4px 10px',
                             fontSize: 13,
+                            opacity: marked ? 0.45 : 1,
+                            transition: 'opacity 0.15s',
                           }}
                           title={
-                            v.is_primary
+                            marked
+                              ? 'Marked for removal — click ↩ to undo'
+                              : v.is_primary
                               ? 'The original colourway'
                               : `Variant · ${v.slug}`
                           }
@@ -555,8 +692,42 @@ export default function EditAdminJobForm({
                             revisionCount={v.revision_count}
                             assigned
                           />
+                          {/* The primary IS the product — removing
+                              it would leave a job with no model at
+                              all, so that's the job Delete button on
+                              List Jobs, not this one. The API
+                              rejects it independently. */}
+                          {!v.is_primary && (
+                            <button
+                              type="button"
+                              onClick={() => toggleVariantRemoval(v.id)}
+                              disabled={busy}
+                              aria-label={
+                                marked
+                                  ? `Undo removing ${v.name}`
+                                  : `Remove ${v.name}`
+                              }
+                              title={
+                                marked
+                                  ? 'Undo'
+                                  : 'Remove this colourway on save'
+                              }
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                                color: 'inherit',
+                                font: 'inherit',
+                                lineHeight: 1,
+                                padding: 0,
+                              }}
+                            >
+                              {marked ? '↩' : '×'}
+                            </button>
+                          )}
                         </span>
-                      ))}
+                        );
+                      })}
 
                       {/* Staged, not yet created. Dashed outline
                           mirrors the reference images' "marked for
@@ -607,6 +778,23 @@ export default function EditAdminJobForm({
                         </span>
                       ))}
                     </div>
+                  )}
+
+                  {removedVariantIds.size > 0 && (
+                    <p
+                      style={{
+                        color: 'var(--danger, #dc2626)',
+                        fontSize: 12,
+                        margin: '0 0 10px',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {removedVariantIds.size} colourway
+                      {removedVariantIds.size === 1 ? '' : 's'} will be deleted
+                      when you press Save changes — permanently, along with any
+                      uploaded model and feedback attached to it. Click ↩ on a
+                      faded chip to undo, or Cancel to discard everything.
+                    </p>
                   )}
 
                   <div style={{ display: 'flex', gap: 8 }}>

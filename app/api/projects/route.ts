@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
 import { isOurPublicUrl } from '../../lib/r2';
+import {
+  isJobComplexity,
+  isJobCategory,
+  type JobComplexity,
+  type JobCategory,
+} from '../../lib/job-options';
 
 export const runtime = 'nodejs';
 
@@ -51,6 +57,11 @@ export async function POST(req: NextRequest) {
     name?: string;
     assigned_to?: string;
     brief?: string;
+    // Classification set on the Create Job form. Both optional and
+    // nullable — a job may be created before anyone has decided
+    // what it is or how hard it'll be.
+    complexity?: unknown;
+    category?: unknown;
     reference_image_urls?: unknown;
     // Optional colourway names supplied at creation time, e.g.
     // ['Grey', 'Navy']. The product always gets a primary variant
@@ -63,6 +74,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const { client_slug, slug, name, assigned_to, brief } = body;
+
+  // Validate the two classification fields against the shared
+  // vocabulary in lib/job-options. We reject an unrecognised
+  // value rather than coercing it to null: a bad value here means
+  // the caller and the option list have drifted, and swallowing
+  // it would lose data silently. null/undefined stay null — the
+  // DB CHECK constraints allow NULL.
+  const rawComplexity = body.complexity;
+  const rawCategory = body.category;
+
+  let complexity: JobComplexity | null = null;
+  if (rawComplexity != null && rawComplexity !== '') {
+    if (!isJobComplexity(rawComplexity)) {
+      return NextResponse.json(
+        { error: 'Invalid complexity value.' },
+        { status: 400 }
+      );
+    }
+    complexity = rawComplexity;
+  }
+
+  let category: JobCategory | null = null;
+  if (rawCategory != null && rawCategory !== '') {
+    if (!isJobCategory(rawCategory)) {
+      return NextResponse.json(
+        { error: 'Invalid category value.' },
+        { status: 400 }
+      );
+    }
+    category = rawCategory;
+  }
+
   if (!client_slug || !slug || !name) {
     return NextResponse.json(
       { error: 'client_slug, slug, name required.' },
@@ -148,6 +191,8 @@ export async function POST(req: NextRequest) {
         // unassigned when the admin picked "Assign later".
         assigned_to: assigned_to ?? null,
         brief: brief?.trim() || null,
+        complexity,
+        category,
         created_by: auth.userId,
       })
       .select()

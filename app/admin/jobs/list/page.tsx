@@ -33,6 +33,11 @@ type ProjectRow = {
   status: ProjectStatus;
   revision_count: number;
   assigned_to: string | null;
+  // Classification set on the admin Create/Edit Job forms. Null
+  // on any job created before the 2026-08-09 migration; the
+  // table renders those as an em dash.
+  complexity: string | null;
+  category: string | null;
   created_at: string;
   updated_at: string;
   client_id: string;
@@ -70,7 +75,7 @@ export default async function AdminListJobsPage() {
   const { data: rawProjects, error } = await supabase()
     .from('uflow_projects')
     .select(
-      `id, slug, name, status, revision_count, assigned_to, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), references:uflow_project_references(id, image_url), ${VARIANT_SELECT}`
+      `id, slug, name, status, revision_count, assigned_to, complexity, category, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), references:uflow_project_references(id, image_url), ${VARIANT_SELECT}`
     )
     .order('updated_at', { ascending: false });
 
@@ -89,6 +94,10 @@ export default async function AdminListJobsPage() {
       ...r,
       client: c ?? { slug: '', name: '' },
       assignee: a,
+      // Normalise undefined -> null so the client component's
+      // label helpers get one "unclassified" shape to handle.
+      complexity: r.complexity ?? null,
+      category: r.category ?? null,
       references: r.references ?? [],
       variants: sortVariants(r.variants),
     };

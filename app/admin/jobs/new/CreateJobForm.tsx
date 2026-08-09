@@ -4,6 +4,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
+import {
+  COMPLEXITY_OPTIONS,
+  CATEGORY_OPTIONS,
+  UNSET,
+} from '../../../lib/job-options';
 
 // ============================================================
 // Types
@@ -49,6 +54,13 @@ export default function CreateJobForm({
   const ASSIGN_LATER = '__unassigned__';
   const [assignedTo, setAssignedTo] = useState<string>(ASSIGN_LATER);
   const [brief, setBrief] = useState('');
+  // Classification fields. Both start UNSET (empty string) rather
+  // than pre-selecting the first option — defaulting to 'Easy' /
+  // 'Sofa' would quietly attach a value the admin never chose,
+  // and "unclassified" is more honest than "wrong". Empty is
+  // translated to null in the payload; the column is nullable.
+  const [complexity, setComplexity] = useState<string>(UNSET);
+  const [category, setCategory] = useState<string>(UNSET);
   // Colourway names to create alongside the product, e.g.
   // ['Grey', 'Navy']. The product always gets an 'Original'
   // primary variant server-side, so this list is the EXTRAS only
@@ -167,6 +179,11 @@ export default function CreateJobForm({
           assigned_to:
             assignedTo === ASSIGN_LATER ? null : assignedTo,
           brief: brief.trim() || undefined,
+          // Send null (not undefined) when left unset so the
+          // server records an explicit "not classified" instead
+          // of treating the field as missing.
+          complexity: complexity || null,
+          category: category || null,
           // Extra colourways. The server always creates the
           // 'Original' primary variant, so this carries only the
           // additional ones.
@@ -258,6 +275,44 @@ export default function CreateJobForm({
             </div>
 
             <div className="crm-form-group">
+              <label className="crm-label">Category</label>
+              <select
+                className="crm-input"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                disabled={busy}
+              >
+                <option value={UNSET}>Select a category…</option>
+                {CATEGORY_OPTIONS.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="crm-form-group">
+              <label className="crm-label">Complexity</label>
+              <select
+                className="crm-input"
+                value={complexity}
+                onChange={(e) => setComplexity(e.target.value)}
+                disabled={busy}
+              >
+                <option value={UNSET}>Select a complexity…</option>
+                {COMPLEXITY_OPTIONS.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '6px 0 0' }}>
+                Rough modelling effort. Both fields can be changed later
+                from Edit Job.
+              </p>
+            </div>
+
+            <div className="crm-form-group">
               <label className="crm-label">Assign to artist</label>
               <select
                 className="crm-input"
@@ -309,7 +364,8 @@ export default function CreateJobForm({
                 Colourways of the same product — add &ldquo;Grey&rdquo; and the
                 artist delivers a separate zip for it, reviewed and approved on
                 its own. Everything stays under one row on the dashboard and
-                shares the reference images below.
+                shares the reference images below. Added colourways sit here as
+                chips until you create the job — click the × on one to drop it.
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
@@ -349,23 +405,28 @@ export default function CreateJobForm({
                   {variants.map((v, i) => (
                     <span
                       key={v}
-                      className="crm-badge crm-badge-draft"
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 6,
+                        gap: 8,
+                        border: '1px dashed var(--border)',
+                        borderRadius: 999,
+                        padding: '4px 10px',
+                        fontSize: 13,
                       }}
+                      title="Will be created when you press Create job"
                     >
-                      {v}
+                      <strong style={{ fontWeight: 600 }}>{v}</strong>
                       <button
                         type="button"
                         onClick={() => removeVariantAt(i)}
+                        disabled={busy}
                         aria-label={`Remove ${v}`}
-                        title={`Remove ${v}`}
+                        title="Remove"
                         style={{
                           background: 'none',
                           border: 'none',
-                          cursor: 'pointer',
+                          cursor: busy ? 'not-allowed' : 'pointer',
                           color: 'inherit',
                           font: 'inherit',
                           lineHeight: 1,
