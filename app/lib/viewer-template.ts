@@ -53,7 +53,26 @@ export function renderViewerHtml(opts: {
   <title>OfficeMate \u2014 ${safeName} 3D Preview</title>
   <meta name="description" content="Interactive 360\u00b0 3D model preview of ${safeName} by OfficeMate">
   <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://ajax.googleapis.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- ------------------------------------------------------------
+       Start the model download with the page, not after it.
+
+       Without this the GLB fetch can't begin until the browser has
+       downloaded and executed the model-viewer module and upgraded
+       the custom element — a serial wait of several hundred ms
+       before a single byte of the model moves. The preload runs it
+       in parallel with the script instead.
+
+       crossorigin is REQUIRED and must stay: model-viewer fetches
+       the model in CORS mode with credentials "same-origin", and a
+       preload whose mode doesn't match is thrown away and fetched
+       again — downloading the model twice.
+       ------------------------------------------------------------ -->
+  <link rel="modulepreload" href="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js" crossorigin>
+  <link rel="preload" href="${glbFilename}" as="fetch" crossorigin>
 
   <!-- Model Viewer -->
   <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>

@@ -1,6 +1,11 @@
 'use client';
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+  MODEL_VIEWER_ORIGIN,
+  MODEL_VIEWER_SCRIPT_URL,
+  originOf,
+} from '../lib/model-viewer-config';
 
 // ============================================================
 // Wraps Google's <model-viewer> web component for GLB preview.
@@ -75,6 +80,24 @@ function injectDimStyle() {
   document.head.appendChild(st);
 }
 
+// Adds a <link rel=preconnect|preload> to the head unless an
+// identical one is already there. `crossorigin=anonymous` is set on
+// every hint deliberately: model-viewer fetches the GLB as a CORS
+// request with credentials mode "same-origin", and a preload whose
+// mode doesn't match is discarded by the browser AND re-fetched, so
+// a mismatched hint makes things slower rather than faster.
+function appendHint(rel: 'preconnect' | 'preload', href: string, as?: string) {
+  if (typeof document === 'undefined' || !href) return;
+  const sel = `link[rel="${rel}"][href="${CSS.escape(href)}"]`;
+  if (document.head.querySelector(sel)) return;
+  const l = document.createElement('link');
+  l.rel = rel;
+  l.href = href;
+  if (as) l.as = as;
+  l.crossOrigin = 'anonymous';
+  document.head.appendChild(l);
+}
+
 const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
   { src, alt, height = 380, showDimensions = true },
   ref
@@ -146,12 +169,35 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     setLoaded(false);
     setProgress(0);
 
-    // Inject the model-viewer script once per page.
-    if (!document.querySelector('script[data-model-viewer]')) {
+    // ------------------------------------------------------------
+    // Resource hints, client side.
+    // ------------------------------------------------------------
+    // The full-screen viewer route already emits a preconnect +
+    // preload for the FIRST model in its server-rendered <head>,
+    // which is the case that matters most. These hints cover the
+    // other two entry points:
+    //   - the review pages, which embed this component without
+    //     knowing the GLB url at render time;
+    //   - a colourway switch, where `src` changes after mount and
+    //     the head-level preload points at the previous model.
+    // appendHint no-ops if an identical hint is already in the head,
+    // so the overlap with the server-rendered ones costs nothing.
+    appendHint('preconnect', MODEL_VIEWER_ORIGIN);
+    const glbOrigin = originOf(src);
+    if (glbOrigin && glbOrigin !== MODEL_VIEWER_ORIGIN) {
+      appendHint('preconnect', glbOrigin);
+    }
+    appendHint('preload', src, 'fetch');
+
+    // Inject the model-viewer script once per page. Matched on src
+    // as well as the marker attribute so we don't add a second copy
+    // alongside the one the viewer route renders into the document.
+    const scriptSelector = `script[data-model-viewer], script[src="${MODEL_VIEWER_SCRIPT_URL}"]`;
+    if (!document.querySelector(scriptSelector)) {
       const s = document.createElement('script');
       s.type = 'module';
-      s.src =
-        'https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js';
+      s.src = MODEL_VIEWER_SCRIPT_URL;
+      s.crossOrigin = 'anonymous';
       s.setAttribute('data-model-viewer', '');
       document.head.appendChild(s);
     }

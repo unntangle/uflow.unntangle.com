@@ -21,6 +21,7 @@ import {
   ChevronRight,
   CheckCircle2,
   UserCircle,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { crmFetch, crmPath } from '../lib/client-fetch';
 import ClientSwitcher, {
@@ -208,6 +209,7 @@ export default function Sidebar({
     isActive('/admin/jobs/list') ||
     isActive('/admin/jobs/new') ||
     isActive('/admin/jobs/reassign') ||
+    isActive('/admin/jobs/status') ||
     isActive('/admin/jobs/download');
   const [jobsOpen, setJobsOpen] = useState<boolean>(isOnJobsChild);
   useEffect(() => {
@@ -416,6 +418,23 @@ export default function Sidebar({
                     >
                       <Repeat size={14} strokeWidth={1.75} aria-hidden="true" />
                       <span>Reassign Job</span>
+                    </button>
+                    {/* Manual status override. Sits next to Reassign
+                        because the two are the same kind of tool —
+                        both correct a job's state by hand rather than
+                        by doing the work that would normally move it. */}
+                    <button
+                      className={`crm-sidebar-link crm-sidebar-link-child ${
+                        isActive('/admin/jobs/status') ? 'is-active' : ''
+                      }`}
+                      onClick={() => router.push(crmPath('/admin/jobs/status'))}
+                    >
+                      <SlidersHorizontal
+                        size={14}
+                        strokeWidth={1.75}
+                        aria-hidden="true"
+                      />
+                      <span>Change Status</span>
                     </button>
                     <button
                       className={`crm-sidebar-link crm-sidebar-link-child ${

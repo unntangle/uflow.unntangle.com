@@ -27,6 +27,7 @@ import {
   publicUrlFor,
   listKeysByPrefix,
   deleteKeys,
+  IMMUTABLE_CACHE_CONTROL,
 } from './r2';
 
 export type ProcessedUpload = {
@@ -169,6 +170,13 @@ async function extractAndUpload(
       key: glbKey,
       body: glbEntry.getData(),
       contentType: contentTypeFor(glbFile),
+      // The GLB is the one asset QA and clients download on every
+      // page view, and withSeq() guarantees a brand-new filename on
+      // every upload — so it can be cached forever without ever
+      // going stale. Without this R2 serves it with no Cache-Control
+      // at all and the browser re-downloads the entire model on
+      // every reload, every colourway switch back, and every revisit.
+      cacheControl: IMMUTABLE_CACHE_CONTROL,
     }),
     fbxEntry && fbxKey
       ? uploadBuffer({

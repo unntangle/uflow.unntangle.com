@@ -2,6 +2,11 @@ import { notFound } from 'next/navigation';
 import { requireUser } from '../../../../lib/auth';
 import { supabase } from '../../../../lib/supabase';
 import { sortVariants } from '../../../../lib/variant-status';
+import {
+  MODEL_VIEWER_ORIGIN,
+  MODEL_VIEWER_SCRIPT_URL,
+  originOf,
+} from '../../../../lib/model-viewer-config';
 import ModelViewerPage from './ModelViewerPage';
 
 // ============================================================
@@ -103,14 +108,71 @@ export default async function Page({
   const primary = orderedVariants.find((v) => v.is_primary);
   const activeVariantId = sp.variant ?? (primary?.id as string | undefined) ?? null;
 
+  const fallbackGlbUrl = project.glb_url || project.approved_glb_url;
+
+  // ----- Preload target -----
+  // Resolve, on the server, the exact GLB the viewer will show on
+  // first paint — the same resolution ModelViewerPage does on the
+  // client. Knowing it here is what lets us start the download from
+  // the HTML <head> instead of waiting for hydration (see
+  // lib/model-viewer-config.ts for the full reasoning).
+  // Mirrors ModelViewerPage's own resolution EXACTLY, including the
+  // case of a variant that exists but has no model yet — that shows
+  // the "No GLB uploaded" state, so falling back to the product's
+  // asset here would preload megabytes the page never renders.
+  const activeVariant = activeVariantId
+    ? variants.find((v) => v.id === activeVariantId) ?? null
+    : null;
+  const activeGlbUrl = activeVariant ? activeVariant.glbUrl : fallbackGlbUrl;
+  const glbOrigin = originOf(activeGlbUrl);
+
   return (
-    <ModelViewerPage
-      projectName={project.name}
-      clientName={c?.name ?? ''}
-      variants={variants}
-      activeVariantId={activeVariantId}
-      fallbackGlbUrl={project.glb_url || project.approved_glb_url}
-      fallbackRevision={project.revision_count ?? 0}
-    />
+    <>
+      {/* ----------------------------------------------------------
+          Resource hints. React 19 hoists these into <head>, so they
+          ship with the initial HTML and the browser opens the R2
+          connection + starts BOTH the model-viewer bundle and the
+          GLB before any of our JS has run. Previously the GLB fetch
+          couldn't begin until hydration had appended the script and
+          the custom element had upgraded — a dead serial wait of
+          several hundred ms to a couple of seconds.
+
+          The GLB preload MUST carry crossOrigin="anonymous" to match
+          model-viewer's own CORS fetch; without it the browser
+          treats them as different requests and downloads the model
+          twice, which is worse than not preloading at all.
+         ---------------------------------------------------------- */}
+      {glbOrigin && glbOrigin !== MODEL_VIEWER_ORIGIN && (
+        <link rel="preconnect" href={glbOrigin} crossOrigin="anonymous" />
+      )}
+      <link rel="preconnect" href={MODEL_VIEWER_ORIGIN} crossOrigin="anonymous" />
+      <link
+        rel="modulepreload"
+        href={MODEL_VIEWER_SCRIPT_URL}
+        crossOrigin="anonymous"
+      />
+      {activeGlbUrl && (
+        <link
+          rel="preload"
+          href={activeGlbUrl}
+          as="fetch"
+          crossOrigin="anonymous"
+        />
+      )}
+      {/* Load the custom element definition from the document itself
+          rather than from a client-side effect. React dedupes async
+          scripts by src, and ModelViewer checks for an existing tag
+          before injecting its own, so this never loads twice. */}
+      <script type="module" src={MODEL_VIEWER_SCRIPT_URL} async />
+
+      <ModelViewerPage
+        projectName={project.name}
+        clientName={c?.name ?? ''}
+        variants={variants}
+        activeVariantId={activeVariantId}
+        fallbackGlbUrl={fallbackGlbUrl}
+        fallbackRevision={project.revision_count ?? 0}
+      />
+    </>
   );
 }

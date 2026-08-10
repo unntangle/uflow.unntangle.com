@@ -151,6 +151,19 @@ export async function uploadBuffer(opts: {
   key: string;
   body: Buffer;
   contentType: string;
+  // Cache-Control to store on the object. R2 replays whatever we
+  // set here on every public GET, so this is the ONLY place the
+  // browser cache policy for bucket assets can be decided — the
+  // `headers()` rules in next.config.ts apply to files Next serves
+  // and never touch an R2 URL.
+  //
+  // Omitted by default because most keys in this bucket are written
+  // in place (approved/<slug>.glb, fbx/, gltf/, source.zip): giving
+  // those a long TTL would serve a stale asset after a re-upload.
+  // Pass IMMUTABLE_CACHE_CONTROL only for keys whose FILENAME
+  // changes every write — today that's the QA GLB, which carries a
+  // "_<seq>" cache-busting suffix.
+  cacheControl?: string;
 }): Promise<{ publicUrl: string }> {
   const e = env();
   await client().send(
@@ -159,10 +172,15 @@ export async function uploadBuffer(opts: {
       Key: opts.key,
       Body: opts.body,
       ContentType: opts.contentType,
+      CacheControl: opts.cacheControl,
     })
   );
   return { publicUrl: publicUrlFor(opts.key) };
 }
+
+// One year, and `immutable` so the browser won't even revalidate.
+// Safe ONLY for content-addressed / sequence-suffixed keys.
+export const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
 // ============================================================
 // Server-side fetch — for re-reading objects (e.g. fetching
