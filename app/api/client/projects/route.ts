@@ -65,7 +65,11 @@ export async function GET() {
   const projects = (data ?? []).map((p) => {
     const r = p as Record<string, unknown> & {
       client_feedback?: { revision_number: number | null }[] | null;
-      variants?: { position?: number }[] | null;
+      // Must carry updated_at as well as position: sortVariants is
+      // generic over its input, so a narrower cast here would
+      // erase the timestamp sortByLatest needs to find the most
+      // recently touched colourway.
+      variants?: { position?: number; updated_at?: string | null }[] | null;
       references?: { image_url: string; created_at: string }[] | null;
     };
     const clientFeedback = Array.isArray(r.client_feedback)

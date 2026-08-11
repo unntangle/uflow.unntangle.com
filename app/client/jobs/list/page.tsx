@@ -81,7 +81,9 @@ export default async function ClientListJobsPage() {
       | { slug: string; name: string }[]
       | null;
     client_feedback?: { revision_number: number | null }[] | null;
-    variants?: { position?: number }[] | null;
+    // updated_at alongside position — sortVariants is generic, so a
+    // narrower cast would erase the timestamp sortByLatest needs.
+    variants?: { position?: number; updated_at?: string | null }[] | null;
     references?: { image_url: string; created_at: string }[] | null;
   };
   const normalised = (projects || []).map((p) => {

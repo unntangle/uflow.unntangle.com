@@ -99,7 +99,12 @@ export default async function ClientPage() {
     // Colourways. Each runs the pipeline independently, so the
     // product's client-facing state is a roll-up of these rather
     // than the (legacy) uflow_projects.status column.
-    variants?: { position?: number }[] | null;
+    //
+    // updated_at is carried alongside position because sortVariants
+    // is generic over its input — a narrower cast would erase the
+    // timestamp sortByLatest reads to find the most recently
+    // touched colourway.
+    variants?: { position?: number; updated_at?: string | null }[] | null;
     // Reference images attached at job creation, collapsed to a
     // single thumbnail URL below.
     references?: { image_url: string; created_at: string }[] | null;
