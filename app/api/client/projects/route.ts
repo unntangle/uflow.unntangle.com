@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../../lib/auth';
 import { supabase } from '../../../lib/supabase';
 import { isOurPublicUrl } from '../../../lib/r2';
+import { VARIANT_SELECT, sortVariants } from '../../../lib/variant-status';
 
 export const runtime = 'nodejs';
 
@@ -38,7 +39,11 @@ export async function GET() {
   const { data, error } = await supabase()
     .from('uflow_projects')
     .select(
-      'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number)'
+      // Colourways travel with every product for the same reason
+      // they do on the SSR dashboard: uflow_projects.status is
+      // stale on any job whose variants have moved on their own,
+      // so the client's buckets have to be derived from these.
+      `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), ${VARIANT_SELECT}`
     )
     .eq('client_id', auth.clientId)
     .order('updated_at', { ascending: false });
@@ -57,6 +62,7 @@ export async function GET() {
   const projects = (data ?? []).map((p) => {
     const r = p as Record<string, unknown> & {
       client_feedback?: { revision_number: number | null }[] | null;
+      variants?: { position?: number }[] | null;
     };
     const clientFeedback = Array.isArray(r.client_feedback)
       ? r.client_feedback
@@ -76,6 +82,7 @@ export async function GET() {
       latest_client_revision:
         clientRevisionCount > 0 ? Math.max(...clientRevisions) : null,
       has_client_rejection: clientRevisionCount > 0,
+      variants: sortVariants(r.variants),
     };
   });
 

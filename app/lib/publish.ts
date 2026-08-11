@@ -245,26 +245,90 @@ type ManifestModel = {
 };
 
 async function writeManifest(): Promise<void> {
-  // Pull every approved project from the DB. We include only
-  // the fields the sidebar needs — don't leak revision counts,
-  // brief text, or other internal data into a public manifest.
-  const { data, error } = await supabase()
-    .from('uflow_projects')
-    .select('slug, name, updated_at')
-    .eq('status', 'approved')
-    .order('updated_at', { ascending: false });
+  // Pull every approved model from the DB. We include only the
+  // fields the sidebar needs — don't leak revision counts, brief
+  // text, or other internal data into a public manifest.
+  //
+  // TWO SOURCES, because approval lands in two different places:
+  //
+  //   1. uflow_projects.status — the legacy single-model path.
+  //   2. uflow_project_variants.status — every job created since
+  //      the 2026-08-06 variants migration. Client sign-off writes
+  //      to the COLOURWAY row and never touches the product's own
+  //      status column, so a manifest built from uflow_projects
+  //      alone silently omits every model approved that way.
+  //
+  // A non-primary colourway publishes under `<slug>-<variantSlug>`
+  // (see the client-review approve path and upload-sign), so its
+  // manifest entry has to use that same asset slug or the sidebar
+  // link would 404. The primary keeps the bare product slug.
+  const [projectsRes, variantsRes] = await Promise.all([
+    supabase()
+      .from('uflow_projects')
+      .select('id, slug, name, status, updated_at'),
+    supabase()
+      .from('uflow_project_variants')
+      .select('project_id, name, slug, status, is_primary, updated_at')
+      .eq('status', 'approved'),
+  ]);
 
-  if (error) {
-    throw new Error(`Supabase query failed: ${error.message}`);
+  if (projectsRes.error) {
+    throw new Error(`Supabase query failed: ${projectsRes.error.message}`);
+  }
+  if (variantsRes.error) {
+    throw new Error(`Supabase query failed: ${variantsRes.error.message}`);
   }
 
-  const models: ManifestModel[] = (data ?? []).map((row) => ({
-    slug: row.slug as string,
-    name: row.name as string,
-    // updated_at on an approved row is the approval timestamp
-    // because the approve handler stamps it during the transition.
-    approved_at: (row.updated_at as string) ?? null,
-  }));
+  const projects = projectsRes.data ?? [];
+  const projectById = new Map(
+    projects.map((p) => [
+      p.id as string,
+      { slug: p.slug as string, name: p.name as string },
+    ])
+  );
+
+  // Keyed by asset slug so a legacy row and its backfilled primary
+  // variant — which describe the same published folder — collapse
+  // into one entry instead of appearing twice in the sidebar.
+  const byAssetSlug = new Map<string, ManifestModel>();
+
+  for (const p of projects) {
+    if (p.status !== 'approved') continue;
+    byAssetSlug.set(p.slug as string, {
+      slug: p.slug as string,
+      name: p.name as string,
+      // updated_at on an approved row is the approval timestamp,
+      // because the approve handler stamps it on transition.
+      approved_at: (p.updated_at as string) ?? null,
+    });
+  }
+
+  for (const v of variantsRes.data ?? []) {
+    const parent = projectById.get(v.project_id as string);
+    // Orphaned variant (parent deleted mid-query) — skip rather
+    // than publish an entry we can't build a valid slug for.
+    if (!parent) continue;
+    const assetSlug = v.is_primary
+      ? parent.slug
+      : `${parent.slug}-${v.slug as string}`;
+    byAssetSlug.set(assetSlug, {
+      slug: assetSlug,
+      // The primary IS the product, so it carries the product's
+      // own name; the migration's 'Original' label would tell a
+      // visitor nothing.
+      name: v.is_primary
+        ? parent.name
+        : `${parent.name} \u00b7 ${v.name as string}`,
+      approved_at: (v.updated_at as string) ?? null,
+    });
+  }
+
+  // Newest first, so the sidebar surfaces what's just shipped.
+  const models: ManifestModel[] = [...byAssetSlug.values()].sort((a, b) => {
+    const at = a.approved_at ? Date.parse(a.approved_at) : 0;
+    const bt = b.approved_at ? Date.parse(b.approved_at) : 0;
+    return bt - at;
+  });
 
   const manifest = {
     generated_at: new Date().toISOString(),

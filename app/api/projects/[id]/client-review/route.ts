@@ -14,31 +14,69 @@ export const maxDuration = 300;
 
 // ============================================================
 // POST /api/projects/:id/client-review
-// Body (JSON):
-//   { image_urls: string[],   // R2 public URLs from client-feedback-sign
-//     note?: string }
 //
-// Mirrors the admin /feedback endpoint's decision rule:
-//   - image_urls non-empty → REJECT (back to admin's QA queue)
+// Body (JSON), preferred PER-COLOURWAY form:
+//   { decisions: [
+//       { variant_id: string,
+//         image_urls: string[],   // R2 URLs from client-feedback-sign
+//         note?: string }, ... ] }
+//
+// Legacy form (still accepted — what the pre-variant client sent):
+//   { image_urls: string[], note?: string }
+//
+// Decision rule, evaluated INDEPENDENTLY for each colourway,
+// mirroring the admin /feedback endpoint:
+//   - image_urls non-empty → REJECT (back to admin's queue)
 //   - image_urls empty     → APPROVE (final — model goes public)
 //
-// Auth: 'client' role only. Project must be in 'client_review'
-// status AND belong to the caller's own brand (auth.clientId).
-// A client can NEVER act on another brand's project.
+// Each colourway is its own model with its own faults, so each
+// carries its own screenshots and its own outcome. Grey can be
+// signed off while Black goes back in the same submission; the
+// dashboards resolve the mix via lib/variant-status.ts.
 //
-// REJECT path:
-//   - status = 'eqa_rejected' (External QA rejection — back to admin)
-//   - one row per URL inserted into uflow_client_feedback_images
-//   - admin sees the rejected project in their EQA Rejected queue
-//     with the client's feedback alongside it
+// WHY THIS IS COLOURWAY-AWARE
+// Since the 2026-08-06 variants migration, uflow_projects.status
+// is only written on the legacy single-model path. Admin's IQA
+// approval writes 'client_review' onto the VARIANT row, so the
+// old guard here (project.status !== 'client_review' → 400)
+// rejected every submission for exactly the jobs the client had
+// just been asked to sign off on.
 //
-// APPROVE path:
-//   - Copy the latest glb_url to <client>/<slug>/approved/<slug>.glb
-//     so officemate.unntangle.com/<slug> serves a stable URL even
-//     when the artist later uploads new revisions to other projects
-//   - status = 'approved' (final)
-//   - approved_glb_url = the copied URL
+// Auth: 'client' role only, and the project must belong to the
+// caller's own brand (auth.clientId). A client can NEVER act on
+// another brand's project, whatever they post.
+//
+// All-or-nothing validation: every named colourway is checked
+// for 'client_review' status and an uploaded GLB BEFORE anything
+// is written, so a bad id can't leave half the product moved.
+//
+// REJECT path (per colourway):
+//   - status = 'eqa_rejected' (External QA rejection)
+//   - revision_count bumped on THAT colourway's own counter
+//   - one row per URL into uflow_client_feedback_images, TAGGED
+//     WITH THAT COLOURWAY'S id and its post-bump revision
+//   - admin picks it up in their EQA Rejected queue
+//
+// APPROVE path (per colourway):
+//   - Copy the GLB to <client>/<assetSlug>/approved/<assetSlug>.glb
+//     as the durable archive, then publish the viewer folder
+//   - status = 'approved', approved_glb_url = public viewer URL
+//
+//   assetSlug is the product slug for the primary colourway and
+//   `<projectSlug>-<variantSlug>` for the rest — the same
+//   namespacing upload-sign writes and the variant DELETE route
+//   purges, so an approved Black can't overwrite the original's
+//   published model.
 // ============================================================
+
+// Displayed in error messages. The primary colourway's stored
+// name is a backfill artefact ('Original'), and the primary IS
+// the product, so it reads as the product's own name — same rule
+// the QA pages and the full-screen viewer apply.
+function labelFor(projectName: string, variantName: string | null): string {
+  return variantName ? `${projectName} \u00b7 ${variantName}` : projectName;
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -69,27 +107,13 @@ export async function POST(
   }
 
   // ----- Brand scoping check -----
-  // A client can only act on projects belonging to their own brand.
-  // We compare the trusted JWT clientId against the project's
-  // client_id; never trust anything from the request body.
+  // A client can only act on projects belonging to their own
+  // brand. We compare the trusted JWT clientId against the
+  // project's client_id; never trust anything from the body.
+  // Checked BEFORE any state guard so we don't leak whether
+  // another brand's job happens to be awaiting review.
   if (project.client_id !== auth.clientId) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 });
-  }
-
-  // ----- Status guard -----
-  if (project.status !== 'client_review') {
-    return NextResponse.json(
-      {
-        error: `Project is "${project.status}" — only "client_review" projects can be reviewed by a client.`,
-      },
-      { status: 400 }
-    );
-  }
-  if (!project.glb_url) {
-    return NextResponse.json(
-      { error: 'Project has no GLB to review.' },
-      { status: 400 }
-    );
   }
 
   const clientRel = project.client as
@@ -105,180 +129,348 @@ export async function POST(
   }
 
   // ----- Parse JSON body -----
-  let body: { image_urls?: unknown; note?: unknown };
+  let body: {
+    image_urls?: unknown;
+    note?: unknown;
+    variant_id?: unknown;
+    decisions?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
-  const rawUrls = Array.isArray(body.image_urls) ? body.image_urls : [];
 
-  // Defensive: ensure every URL is from our R2 bucket so a client
-  // can't pin arbitrary external image references as "feedback".
-  const imageUrls: string[] = rawUrls
-    .filter((u): u is string => typeof u === 'string')
-    .filter((u) => isOurPublicUrl(u));
+  // Every URL must be from our R2 bucket so a client can't pin
+  // arbitrary external images as "feedback".
+  const cleanUrls = (raw: unknown): string[] =>
+    (Array.isArray(raw) ? raw : [])
+      .filter((u): u is string => typeof u === 'string')
+      .filter((u) => isOurPublicUrl(u));
 
-  // revision_count is the count of REJECTION rounds. The client's
-  // EQA rejection is a rejection round too — same counter, no
-  // separate IQA/EQA tally. Feedback rows are tagged with the
-  // POST-bump number to match the rev number the artist will
-  // see in their dashboard.
-  const nextRevisionCount = project.revision_count + 1;
+  type Decision = { variantId: string | null; imageUrls: string[] };
+  let decisions: Decision[] = [];
 
-  // ============================================================
-  // Branch A: REJECT → back to admin's QA queue
-  //
-  // Per the agreed policy, client rejection sends the project
-  // back to admin (status='qa_pending') rather than directly to
-  // the artist. The admin then decides whether to forward the
-  // rejection to the artist or push back on the client.
-  // ============================================================
-  if (imageUrls.length > 0) {
-    const rows = imageUrls.map((url) => ({
-      project_id: id,
-      revision_number: nextRevisionCount,
-      image_url: url,
-      uploaded_by: auth.userId,
-    }));
-    const { error: fErr } = await supabase()
-      .from('uflow_client_feedback_images')
-      .insert(rows);
-    if (fErr) {
-      console.error('[client-review.reject] insert', fErr);
-      // Surface the underlying Postgres message so the cause is
-      // visible in the UI — a bare "DB error" hides things like
-      // unique-constraint violations and CHECK failures.
+  if (Array.isArray(body.decisions)) {
+    for (const raw of body.decisions) {
+      if (!raw || typeof raw !== 'object') continue;
+      const d = raw as Record<string, unknown>;
+      decisions.push({
+        variantId: typeof d.variant_id === 'string' ? d.variant_id : null,
+        imageUrls: cleanUrls(d.image_urls),
+      });
+    }
+    if (decisions.length === 0) {
       return NextResponse.json(
-        { error: `DB error inserting feedback rows: ${fErr.message}` },
+        { error: 'No colourways were included in this submission.' },
+        { status: 400 }
+      );
+    }
+    // Two decisions for the same row would race each other on the
+    // status write and double-bump the revision counter.
+    const seen = new Set<string>();
+    for (const d of decisions) {
+      const key = d.variantId ?? '__project';
+      if (seen.has(key)) {
+        return NextResponse.json(
+          { error: 'The same colourway appears twice in this submission.' },
+          { status: 400 }
+        );
+      }
+      seen.add(key);
+    }
+  } else {
+    // ----- Legacy shape -----
+    // One flat verdict with no colourway named. Applying it to the
+    // product row would hit the stale-status wall on any variant
+    // job, so we fan it out across everything actually awaiting
+    // this client's decision. Falls through to the product row
+    // only when there are no colourways at all (pre-migration).
+    const imageUrls = cleanUrls(body.image_urls);
+    const explicit =
+      typeof body.variant_id === 'string' ? body.variant_id : null;
+
+    if (explicit) {
+      decisions = [{ variantId: explicit, imageUrls }];
+    } else {
+      const { data: awaiting, error: aErr } = await supabase()
+        .from('uflow_project_variants')
+        .select('id')
+        .eq('project_id', id)
+        .eq('status', 'client_review');
+      if (aErr) {
+        console.error('[client-review] legacy variant lookup', aErr);
+        return NextResponse.json({ error: 'DB error' }, { status: 500 });
+      }
+      decisions =
+        (awaiting ?? []).length > 0
+          ? (awaiting ?? []).map((v) => ({
+              variantId: v.id as string,
+              imageUrls,
+            }))
+          : [{ variantId: null, imageUrls }];
+    }
+  }
+
+  // ----- Resolve the review targets -----
+  type ReviewTarget = Decision & {
+    table: 'uflow_projects' | 'uflow_project_variants';
+    rowId: string;
+    status: string;
+    revisionCount: number;
+    glbUrl: string | null;
+    // Slug the approved asset is filed and published under.
+    assetSlug: string;
+    // Human-readable name for errors + the published viewer page.
+    label: string;
+  };
+
+  const variantIds = decisions
+    .map((d) => d.variantId)
+    .filter((v): v is string => typeof v === 'string');
+
+  type VariantRow = {
+    id: string;
+    project_id: string;
+    name: string;
+    slug: string;
+    status: string;
+    revision_count: number;
+    glb_url: string | null;
+    is_primary: boolean;
+  };
+  const variantById = new Map<string, VariantRow>();
+
+  if (variantIds.length > 0) {
+    const { data: rows, error: vErr } = await supabase()
+      .from('uflow_project_variants')
+      .select(
+        'id, project_id, name, slug, status, revision_count, glb_url, is_primary'
+      )
+      .in('id', variantIds);
+    if (vErr) {
+      console.error('[client-review] variant lookup', vErr);
+      return NextResponse.json({ error: 'DB error' }, { status: 500 });
+    }
+    if (!rows || rows.length !== variantIds.length) {
+      return NextResponse.json(
+        { error: 'One or more colourways were not found.' },
+        { status: 404 }
+      );
+    }
+    // Every id must belong to THIS product — otherwise a crafted
+    // request could move another product's colourway, including
+    // one belonging to a brand the caller can't see.
+    const stray = rows.find((v) => v.project_id !== id);
+    if (stray) {
+      return NextResponse.json(
+        { error: 'That colourway belongs to a different project.' },
+        { status: 400 }
+      );
+    }
+    for (const v of rows as unknown as VariantRow[]) {
+      variantById.set(v.id, v);
+    }
+  }
+
+  const targets: ReviewTarget[] = decisions.map((d) => {
+    if (d.variantId === null) {
+      return {
+        ...d,
+        table: 'uflow_projects' as const,
+        rowId: project.id,
+        status: project.status,
+        revisionCount: project.revision_count,
+        glbUrl: project.glb_url,
+        assetSlug: project.slug,
+        label: project.name,
+      };
+    }
+    const v = variantById.get(d.variantId)!;
+    return {
+      ...d,
+      table: 'uflow_project_variants' as const,
+      rowId: v.id,
+      status: v.status,
+      revisionCount: v.revision_count,
+      glbUrl: v.glb_url,
+      // The primary colourway IS the product, so it keeps the bare
+      // product slug — its published folder is the one the public
+      // viewer URL has always pointed at.
+      assetSlug: v.is_primary ? project.slug : `${project.slug}-${v.slug}`,
+      label: labelFor(project.name, v.is_primary ? null : v.name),
+    };
+  });
+
+  // Guards run against every TARGET, not the product. All-or-
+  // nothing: a partially applied decision would leave the product
+  // in a state nobody asked for.
+  for (const t of targets) {
+    if (t.status !== 'client_review') {
+      return NextResponse.json(
+        {
+          error: `"${t.label}" is "${t.status}" \u2014 only models awaiting your sign-off can be reviewed.`,
+        },
+        { status: 400 }
+      );
+    }
+    if (!t.glbUrl) {
+      return NextResponse.json(
+        { error: `"${t.label}" has no GLB to review.` },
+        { status: 400 }
+      );
+    }
+  }
+
+  // ============================================================
+  // Apply each colourway's own outcome.
+  // ============================================================
+  const rejected: { id: string; label: string; revision: number }[] = [];
+  const approved: { id: string; label: string; url: string }[] = [];
+
+  for (const t of targets) {
+    // ---------------- REJECT ----------------
+    if (t.imageUrls.length > 0) {
+      // revision_count counts REJECTION rounds. Rows are tagged
+      // with the POST-bump number so the round reads as "this
+      // feedback drove the work that produced revision N", and so
+      // the DB agrees with the R2 folder client-feedback-sign
+      // already wrote these files into.
+      const revision = t.revisionCount + 1;
+      const rows = t.imageUrls.map((url) => ({
+        project_id: id,
+        // Tagged to the colourway it marks up, so the gallery can
+        // group "Black - revision 3" rather than one pile.
+        variant_id: t.table === 'uflow_project_variants' ? t.rowId : null,
+        revision_number: revision,
+        image_url: url,
+        uploaded_by: auth.userId,
+      }));
+      const { error: fErr } = await supabase()
+        .from('uflow_client_feedback_images')
+        .insert(rows);
+      if (fErr) {
+        console.error('[client-review.reject] insert', fErr);
+        // Surface the underlying Postgres message — a bare "DB
+        // error" hides things like CHECK failures.
+        return NextResponse.json(
+          {
+            error: `DB error inserting feedback rows for "${t.label}": ${fErr.message}`,
+          },
+          { status: 500 }
+        );
+      }
+
+      const { error: uErr } = await supabase()
+        .from(t.table)
+        .update({
+          status: 'eqa_rejected',
+          revision_count: revision,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', t.rowId);
+      if (uErr) {
+        console.error('[client-review.reject] update', uErr);
+        return NextResponse.json(
+          { error: `DB error updating "${t.label}": ${uErr.message}` },
+          { status: 500 }
+        );
+      }
+      rejected.push({ id: t.rowId, label: t.label, revision });
+      continue;
+    }
+
+    // ---------------- APPROVE ----------------
+    // Two storage side-effects, in this order so a failure in the
+    // second doesn't strand the first:
+    //
+    //   1. Copy the GLB to <client>/<assetSlug>/approved/. This is
+    //      the durable archive — even if the published folder is
+    //      wiped, this copy survives and the URL stays valid.
+    //   2. Publish the viewer folder (GLB + index.html + logo) so
+    //      the model is browsable.
+    //
+    // approved_glb_url stores the PUBLIC VIEWER url, because
+    // that's where the dashboards' "View GLB" link should land.
+    let r2ApprovedUrl: string;
+    try {
+      const buf = await fetchFromUrl(t.glbUrl as string);
+      const { publicUrl } = await uploadBuffer({
+        key: approvedKey(cSlug, t.assetSlug, `${t.assetSlug}.glb`),
+        body: buf,
+        contentType: 'model/gltf-binary',
+      });
+      r2ApprovedUrl = publicUrl;
+    } catch (err) {
+      console.error('[client-review.approve] r2 copy', err);
+      return NextResponse.json(
+        {
+          error: `Could not finalise "${t.label}" (R2 copy): ${
+            (err as Error).message
+          }`,
+        },
         { status: 500 }
       );
     }
+
+    // Publish from the archived copy, not the rev-N upload: the
+    // approved/ key is never rewritten, so the published model
+    // can't be changed out from under the viewer by a later
+    // re-upload to the same rev folder.
+    let publishResult;
+    try {
+      publishResult = await publishGlbToPublicFolder({
+        glbSourceUrl: r2ApprovedUrl,
+        slug: t.assetSlug,
+        projectName: t.label,
+      });
+    } catch (err) {
+      console.error('[client-review.approve] publish', err);
+      return NextResponse.json(
+        {
+          // The archive copy already succeeded, so say so — the
+          // model is safe and only the publish step failed.
+          error: `"${t.label}" was archived to R2 but could not be published: ${
+            (err as Error).message
+          }`,
+        },
+        { status: 500 }
+      );
+    }
+
+    const approvedUrl = publishResult.publicViewerUrl;
 
     const { error: uErr } = await supabase()
-      .from('uflow_projects')
+      .from(t.table)
       .update({
-        status: 'eqa_rejected',
-        // EQA rejection counts as a rejection round, so the
-        // counter advances same as on IQA rejection. Uploads
-        // never touch revision_count; only rejections do.
-        revision_count: nextRevisionCount,
+        status: 'approved',
+        approved_glb_url: approvedUrl,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id);
+      .eq('id', t.rowId);
     if (uErr) {
-      console.error('[client-review.reject] update', uErr);
+      console.error('[client-review.approve] update', uErr);
       return NextResponse.json(
-        { error: `DB error updating project: ${uErr.message}` },
+        { error: `DB error updating "${t.label}": ${uErr.message}` },
         { status: 500 }
       );
     }
-
-    return NextResponse.json({
-      ok: true,
-      decision: 'eqa_rejected',
-      revision: nextRevisionCount,
-      feedback_count: imageUrls.length,
-    });
-  }
-
-  // ============================================================
-  // Branch B: APPROVE → final, publish
-  //
-  // Approval has two storage side-effects, run in this order so
-  // a failure in the second one doesn't strand the first:
-  //
-  //   1. Copy the GLB to R2 under <client>/<slug>/approved/<slug>.glb.
-  //      This is the durable backup — even if the on-disk public
-  //      folder gets nuked (redeploy, host migration, fat-finger),
-  //      the R2 copy still exists and the URL stays valid for any
-  //      external tools that already cached it.
-  //
-  //   2. Publish to the public folder at
-  //      public/officemate/<slug>/ — writes the GLB, the viewer
-  //      page (index.html), and the logo so the model is browsable
-  //      at officemate.unntangle.com/<slug>/. This is the
-  //      user-facing publish.
-  //
-  // approved_glb_url is set to the PUBLIC VIEWER URL (the
-  // officemate.unntangle.com one), because that's what the
-  // dashboards' "View GLB" link should send people to. The raw
-  // R2 URL is still recoverable from project.glb_url + the
-  // approved/ key pattern if anyone needs it.
-  // ============================================================
-  let r2ApprovedUrl: string;
-  try {
-    const buf = await fetchFromUrl(project.glb_url);
-    const { publicUrl } = await uploadBuffer({
-      key: approvedKey(cSlug, project.slug, `${project.slug}.glb`),
-      body: buf,
-      contentType: 'model/gltf-binary',
-    });
-    r2ApprovedUrl = publicUrl;
-  } catch (err) {
-    console.error('[client-review.approve] r2 copy', err);
-    return NextResponse.json(
-      { error: 'Could not finalise approved asset (R2 copy): ' + (err as Error).message },
-      { status: 500 }
-    );
-  }
-
-  // Publish to the on-disk public folder. We pass the R2 approved
-  // URL as the source so the published file is always the durable
-  // copy, not the rev-N upload that could theoretically be
-  // overwritten by a future re-upload to the same key (the
-  // approved/ key won't be touched again).
-  let publishResult;
-  try {
-    publishResult = await publishGlbToPublicFolder({
-      glbSourceUrl: r2ApprovedUrl,
-      slug: project.slug,
-      projectName: project.name,
-    });
-  } catch (err) {
-    console.error('[client-review.approve] public folder', err);
-    return NextResponse.json(
-      {
-        // The R2 copy already succeeded at this point — surface
-        // that in the message so the admin knows the model is
-        // safely backed up and the only thing that failed is the
-        // public-folder publish (likely a permissions / read-only
-        // filesystem issue on the deploy target).
-        error:
-          'GLB was archived to R2 but could not be published to the public folder: ' +
-          (err as Error).message,
-      },
-      { status: 500 }
-    );
-  }
-
-  // Dashboards link to the user-facing viewer URL, not the raw
-  // GLB — visitors get the model-viewer page with controls.
-  const approvedUrl = publishResult.publicViewerUrl;
-
-  const { error: uErr } = await supabase()
-    .from('uflow_projects')
-    .update({
-      status: 'approved',
-      approved_glb_url: approvedUrl,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id);
-  if (uErr) {
-    console.error('[client-review.approve] update', uErr);
-    return NextResponse.json({ error: 'DB error' }, { status: 500 });
+    approved.push({ id: t.rowId, label: t.label, url: approvedUrl });
   }
 
   return NextResponse.json({
     ok: true,
-    decision: 'approved',
-    approved_glb_url: approvedUrl,
-    // Also return the raw asset URLs in case any caller needs
-    // them. The dashboards only use approved_glb_url; this is
-    // for diagnostics / future integrations.
-    public_viewer_url: publishResult.publicViewerUrl,
-    public_glb_url: publishResult.publicGlbUrl,
-    r2_approved_url: r2ApprovedUrl,
+    // 'mixed' when the submission split both ways — callers that
+    // only read a single decision string still get something
+    // truthful rather than a silently wrong one.
+    decision:
+      rejected.length && approved.length
+        ? 'mixed'
+        : rejected.length
+          ? 'eqa_rejected'
+          : 'approved',
+    rejected,
+    approved,
   });
 }
 
@@ -287,7 +479,7 @@ export async function POST(
 //
 // Returns all client-feedback images for the project. Used by
 // admin's QA page to surface why the client previously rejected
-// a project that has come back around to qa_pending.
+// a project that has come back around.
 //
 // Auth:
 //   - admin: any project
@@ -323,7 +515,7 @@ export async function GET(
 
   const { data, error } = await supabase()
     .from('uflow_client_feedback_images')
-    .select('id, revision_number, image_url, created_at')
+    .select('id, revision_number, image_url, variant_id, created_at')
     .eq('project_id', id)
     .order('revision_number', { ascending: true })
     .order('created_at', { ascending: true });

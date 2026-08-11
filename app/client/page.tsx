@@ -1,5 +1,6 @@
 import { requireUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
+import { VARIANT_SELECT, sortVariants } from '../lib/variant-status';
 import ClientDashboard from './ClientDashboard';
 
 // ============================================================
@@ -51,7 +52,14 @@ export default async function ClientPage() {
     supabase()
       .from('uflow_projects')
       .select(
-        'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number)'
+        // VARIANT_SELECT is not optional decoration. Since the
+        // 2026-08-06 variants migration, uflow_projects.status is
+        // only written on the legacy single-model path, so a job
+        // whose colourway was forwarded to EQA still reads 'wip'
+        // (or worse) on the product row. Without the colourways in
+        // hand the dashboard buckets on a stale column and the
+        // client's EQA queue comes back empty.
+        `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), ${VARIANT_SELECT}`
       )
       .eq('client_id', user.clientId)
       .order('updated_at', { ascending: false }),
@@ -79,6 +87,10 @@ export default async function ClientPage() {
     client_feedback?:
       | { revision_number: number | null }[]
       | null;
+    // Colourways. Each runs the pipeline independently, so the
+    // product's client-facing state is a roll-up of these rather
+    // than the (legacy) uflow_projects.status column.
+    variants?: { position?: number }[] | null;
   };
   const normalised = (projects || []).map((p) => {
     const r = p as Joined & Record<string, unknown>;
@@ -115,6 +127,9 @@ export default async function ClientPage() {
       // Revision Round cell into the client feedback gallery.
       latest_client_revision: latestClientRevision,
       has_client_rejection: clientRevisionCount > 0,
+      // PostgREST can't order an embedded resource independently
+      // of its parent, so ordering happens here.
+      variants: sortVariants(r.variants),
     };
   });
 

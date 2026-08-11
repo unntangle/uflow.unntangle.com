@@ -8,16 +8,26 @@ export const runtime = 'nodejs';
 
 // ============================================================
 // POST /api/projects/:id/client-feedback-sign
-// Body: { count: number, content_types?: string[] }
+// Body: { count: number,
+//         content_types?: string[],
+//         variant_ids?: (string | null)[] }
 //
 // Mirrors the admin /feedback-sign endpoint but for client-role
-// users on projects in 'client_review' status. Returns N
-// presigned R2 PUT URLs scoped to the client-feedback/ folder.
+// users on models awaiting EQA sign-off. Returns N presigned R2
+// PUT URLs scoped to the client-feedback/ folder.
 //
 // Auth: 'client' only. Project must belong to the caller's own
-// brand AND be in 'client_review' status. The route trusts only
-// auth.clientId (from the JWT) for the brand check \u2014 never the
-// request body.
+// brand AND have something awaiting their sign-off. The route
+// trusts only auth.clientId (from the JWT) for the brand check —
+// never the request body.
+//
+// variant_ids is parallel to content_types: which colourway each
+// file belongs to. Feedback is attached PER COLOURWAY, and each
+// one carries its own revision counter, so the R2 folder has to
+// follow that colourway rather than one product-wide figure —
+// two models under review can sit at different counts (Grey on
+// 4, a newly added Black on 0), and filing Black's screenshot
+// under rev-5 would put it in a round its rows never claim.
 // ============================================================
 
 const ALLOWED_TYPES = new Set([
@@ -64,7 +74,11 @@ export async function POST(
 
   const { id } = await params;
 
-  let body: { count?: number; content_types?: unknown };
+  let body: {
+    count?: number;
+    content_types?: unknown;
+    variant_ids?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -79,6 +93,9 @@ export async function POST(
   }
 
   const rawTypes = Array.isArray(body.content_types) ? body.content_types : [];
+  const rawVariantIds = Array.isArray(body.variant_ids)
+    ? body.variant_ids
+    : [];
 
   // ----- Load project + verify brand + status -----
   const { data: project } = await supabase()
@@ -96,10 +113,29 @@ export async function POST(
   if (project.client_id !== auth.clientId) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 });
   }
-  if (project.status !== 'client_review') {
+
+  // ----- Reviewable check -----
+  // uflow_projects.status is only written on the legacy single-
+  // model path, so since the variants migration it goes stale as
+  // soon as a colourway moves on its own — a product whose
+  // colourways were all forwarded for sign-off can still read
+  // 'wip' here. Guarding on it alone rejected uploads for exactly
+  // the jobs the client review page was legitimately reviewing.
+  // So we ask the same question that page does: is ANYTHING here
+  // awaiting this client's decision?
+  const { data: variants } = await supabase()
+    .from('uflow_project_variants')
+    .select('id, status, revision_count')
+    .eq('project_id', id);
+
+  const reviewable = (variants ?? []).filter(
+    (v) => v.status === 'client_review'
+  );
+
+  if (reviewable.length === 0 && project.status !== 'client_review') {
     return NextResponse.json(
       {
-        error: `Cannot sign client-feedback uploads for status "${project.status}".`,
+        error: `Cannot sign client-feedback uploads — nothing on "${project.slug}" is awaiting your review.`,
       },
       { status: 400 }
     );
@@ -119,12 +155,33 @@ export async function POST(
   // revision_count from N to N+1 and tags feedback rows with the
   // post-bump number. The R2 folder must match. First rejection
   // (revision_count=0) puts feedback under client-feedback/rev-1/.
-  const revision = project.revision_count + 1;
+  //
+  // Per-colourway lookup: each one advances its OWN counter, so
+  // each file's folder comes from the colourway it was attached
+  // to rather than one product-wide figure.
+  const revisionByVariant = new Map<string, number>(
+    reviewable.map((v) => [
+      v.id as string,
+      (v.revision_count as number) + 1,
+    ])
+  );
+  // Files with no colourway (legacy single-model path, or an
+  // older client bundle that doesn't send variant_ids) fall back
+  // to the furthest-along round so the key can't collide with a
+  // folder an earlier round already wrote.
+  const fallbackRevision = reviewable.length
+    ? Math.max(...reviewable.map((v) => (v.revision_count as number) + 1))
+    : project.revision_count + 1;
 
   try {
     const signed = await Promise.all(
       Array.from({ length: count }, async (_, i) => {
         const contentType = safeContentType(rawTypes[i]);
+        const vid = rawVariantIds[i];
+        const revision =
+          typeof vid === 'string' && revisionByVariant.has(vid)
+            ? (revisionByVariant.get(vid) as number)
+            : fallbackRevision;
         const filename = `${randomUUID()}.${extFor(contentType)}`;
         const key = clientFeedbackKey(
           clientSlug,
@@ -141,6 +198,10 @@ export async function POST(
           upload_url: url,
           public_url: publicUrl,
           content_type: contentType,
+          // Echoed back so the caller can map a signed slot to the
+          // colourway it belongs to without relying on array
+          // order alone.
+          variant_id: typeof vid === 'string' ? vid : null,
         };
       })
     );

@@ -10,6 +10,11 @@ import {
   SortableTh,
   statusRank,
 } from '../lib/use-table-sort';
+import {
+  anyVariantIn,
+  allVariantsApproved,
+  rollupStatus,
+} from '../lib/variant-status';
 
 // ============================================================
 // Types
@@ -55,9 +60,94 @@ type Project = {
   // still belongs in EQA Rejected from the client's POV until
   // it's finally approved.
   has_client_rejection?: boolean;
+  // Colourways of this product. Each one runs the nine-state
+  // pipeline independently, and since the 2026-08-06 variants
+  // migration THESE rows — not the product's own status column —
+  // are where per-model state actually lives. Every bucket and
+  // badge below derives from them; see lib/variant-status.ts.
+  variants?: Variant[];
+};
+
+// A colourway. Carries its own status because Grey can be sitting
+// in the client's EQA queue while Black is still with the artist.
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: Project['status'];
+  revision_count: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
 };
 
 type Brand = { id: string; slug: string; name: string };
+
+// ============================================================
+// Client-facing state derivation
+// ============================================================
+// "What state is this job in for the client?" is a question
+// about the COLOURWAYS, not about uflow_projects.status — the
+// variants migration left that column behind on everything but
+// the legacy single-model path, so admin forwarding a colourway
+// to EQA never touches it. Reading it directly is exactly why
+// the client's EQA tab sat empty while admin's showed a queue.
+//
+// Membership uses ANY-variant, the same rule the admin Overview
+// applies: a product with Black awaiting sign-off and Grey still
+// with the artist belongs in EQA, because there IS something the
+// client can act on. Approved is the exception — it needs EVERY
+// colourway signed off, which is what allVariantsApproved gives.
+//
+// Both helpers fall back to the product's own status column when
+// a job has no variant rows at all (pre-migration data), so
+// nothing regresses for legacy jobs.
+function inEqa(p: Project): boolean {
+  return anyVariantIn(p, ['client_review']);
+}
+
+function isApproved(p: Project): boolean {
+  return allVariantsApproved(p);
+}
+
+// Rejected by the client. `has_client_rejection` keeps a job in
+// this bucket even after it's been re-routed, until it's finally
+// approved — from the client's POV a job they pushed back on is
+// still theirs to watch.
+function inEqaRejected(p: Project): boolean {
+  return anyVariantIn(p, ['eqa_rejected']) || !!p.has_client_rejection;
+}
+
+// The single client-facing label for a row. Ordered by what the
+// client most needs to know: finished, then actionable, then
+// pushed back, then everything still internal.
+function clientStatusLabel(p: Project): string {
+  if (isApproved(p)) return 'Approved';
+  if (inEqa(p)) return 'EQA';
+  if (inEqaRejected(p)) return 'EQA Rejected';
+  return 'Open';
+}
+
+// Is there a model to look at? The product's own glb_url is only
+// written on the legacy single-model path, so a variant job would
+// otherwise render an empty Asset cell while sitting in the EQA
+// queue with a model the client is being asked to sign off on.
+function hasViewableModel(p: Project): boolean {
+  if (p.approved_glb_url || p.glb_url) return true;
+  return (p.variants ?? []).some((v) => v.approved_glb_url || v.glb_url);
+}
+
+// Edit / Delete are only offered before an artist picks the job
+// up. Derived from the roll-up rather than p.status for the same
+// staleness reason — a job whose colourway is mid-revision can
+// still read 'draft' on the product row. The server re-checks
+// this independently in /api/client/projects/[id]; this is just
+// the affordance.
+function isEditableByClient(p: Project): boolean {
+  return rollupStatus(p) === 'draft';
+}
 
 // ============================================================
 // ClientDashboard
@@ -149,21 +239,18 @@ export default function ClientDashboard({
   const isQaMode = !isAllocatedMode && !isApprovedMode && tabParam === 'pending';
 
   // ----- Bucket projects -----
-  const review = projects.filter((p) => p.status === 'client_review');
-  const history = projects.filter((p) => p.status === 'approved');
+  // Every bucket goes through the colourway-aware helpers above.
+  // Open Jobs stays defined as "none of the other three", so the
+  // four tabs still read as a partition of the client's list.
+  const review = projects.filter(inEqa);
+  const history = projects.filter(isApproved);
   const clientRejected = projects.filter(
-    (p) =>
-      p.status !== 'approved' &&
-      (p.status === 'eqa_rejected' || p.has_client_rejection)
+    (p) => !isApproved(p) && inEqaRejected(p)
   );
   const notApproved = projects.filter(
-    (p) =>
-      p.status !== 'client_review' &&
-      p.status !== 'approved' &&
-      p.status !== 'eqa_rejected' &&
-      !p.has_client_rejection
+    (p) => !isApproved(p) && !inEqa(p) && !inEqaRejected(p)
   );
-  const allocated = projects.filter((p) => p.status !== 'approved');
+  const allocated = projects.filter((p) => !isApproved(p));
 
   // ----- Tab plumbing -----
   type Tab = 'not_approved' | 'review' | 'client_rejected' | 'history';
@@ -473,13 +560,9 @@ export default function ClientDashboard({
 // quoted, embedded quotes doubled) and prefixed with a UTF-8
 // BOM so Excel detects the encoding for non-ASCII project names.
 // ============================================================
-function clientStatusLabel(p: Project): string {
-  if (p.status === 'approved') return 'Approved';
-  if (p.status === 'client_review') return 'EQA';
-  if (p.status === 'eqa_rejected' || p.has_client_rejection) return 'EQA Rejected';
-  return 'Open';
-}
-
+// clientStatusLabel is defined once near the top of this file,
+// alongside the bucket helpers, so the CSV, the status pill and
+// the tab counts can never disagree about what a row reads as.
 function csvEscape(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -571,13 +654,6 @@ function ProjectTable({
   forceStatusLabel?: string;
   onDelete?: (p: Project) => void;
 }) {
-  function fallbackLabel(p: Project): string {
-    if (p.status === 'approved') return 'Approved';
-    if (p.status === 'client_review') return 'EQA';
-    if (p.status === 'eqa_rejected' || p.has_client_rejection) return 'EQA Rejected';
-    return 'Open';
-  }
-
   // Build the feedback-gallery URL for a given project, scoped to
   // the client's own EQA feedback. `source=client` tells the
   // gallery to read from uflow_client_feedback_images (the
@@ -606,7 +682,7 @@ function ProjectTable({
   // References/Asset/Action/Actions are links or controls, not
   // sortable data. Cycles asc -> desc -> off.
   const clientStatusRank = (p: Project): number => {
-    const label = forceStatusLabel ?? fallbackLabel(p);
+    const label = forceStatusLabel ?? clientStatusLabel(p);
     const order: Record<string, number> = {
       Open: 0,
       EQA: 1,
@@ -705,7 +781,7 @@ function ProjectTable({
             </td>
             {showAsset && (
               <td>
-                {(p.approved_glb_url || p.glb_url) && (
+                {hasViewableModel(p) && (
                   <a
                     className="crm-link"
                     // In-app viewer, not the raw R2 URL — a .glb
@@ -724,7 +800,7 @@ function ProjectTable({
             )}
             <td>
               <ClientStatusPill
-                label={forceStatusLabel ?? fallbackLabel(p)}
+                label={forceStatusLabel ?? clientStatusLabel(p)}
               />
             </td>
             {showReviewAction && (
@@ -739,7 +815,7 @@ function ProjectTable({
             )}
             {onDelete && (
               <td style={{ textAlign: 'right' }}>
-                {p.status === 'draft' ? (
+                {isEditableByClient(p) ? (
                   <div
                     style={{
                       display: 'flex',

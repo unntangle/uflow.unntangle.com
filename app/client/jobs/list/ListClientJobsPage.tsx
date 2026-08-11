@@ -5,6 +5,7 @@ import { Trash2 } from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
 import { crmPath, crmFetch } from '../../../lib/client-fetch';
 import { useTableSort, SortableTh } from '../../../lib/use-table-sort';
+import { anyVariantIn, allVariantsApproved } from '../../../lib/variant-status';
 
 // ============================================================
 // Types
@@ -34,6 +35,23 @@ type Project = {
   updated_at: string;
   client: { slug: string; name: string };
   has_client_rejection?: boolean;
+  // Colourways. Since the 2026-08-06 variants migration these
+  // rows hold per-model state, so the Status column has to be
+  // derived from them rather than from the product's own column.
+  variants?: Variant[];
+};
+
+type Variant = {
+  id: string;
+  name: string;
+  slug: string;
+  status: Project['status'];
+  revision_count: number;
+  glb_url: string | null;
+  approved_glb_url: string | null;
+  is_primary: boolean;
+  position: number;
+  updated_at: string;
 };
 
 type Brand = { id: string; slug: string; name: string };
@@ -243,10 +261,18 @@ export default function ListClientJobsPage({
                         {new Date(p.created_at).toLocaleDateString()}
                       </td>
                       <td>
-                        {(p.approved_glb_url || p.glb_url) && (
+                        {/* Falls back to the colourways: on a variant
+                            job the product's own glb_url is never
+                            written, so this cell would otherwise be
+                            empty for every model in flight. */}
+                        {(p.approved_glb_url ||
+                          p.glb_url ||
+                          (p.variants ?? []).some(
+                            (v) => v.approved_glb_url || v.glb_url
+                          )) && (
                           <a
                             className="crm-link"
-                            href={p.approved_glb_url || p.glb_url!}
+                            href={crmPath(`/admin/qa/${p.id}/model`)}
                             target="_blank"
                             rel="noreferrer"
                           >
@@ -366,9 +392,15 @@ export default function ListClientJobsPage({
 // Overview dashboard so a job reads the same on both screens.
 // ============================================================
 function clientStatusLabel(p: Project): string {
-  if (p.status === 'approved') return 'Approved';
-  if (p.status === 'client_review') return 'EQA';
-  if (p.status === 'eqa_rejected' || p.has_client_rejection) return 'EQA Rejected';
+  // Colourway-aware, matching ClientDashboard exactly. Reading
+  // p.status directly would report "Open" for a job whose model
+  // is actually sitting in the client's own EQA queue, because
+  // the product row isn't written on the variant path.
+  if (allVariantsApproved(p)) return 'Approved';
+  if (anyVariantIn(p, ['client_review'])) return 'EQA';
+  if (anyVariantIn(p, ['eqa_rejected']) || p.has_client_rejection) {
+    return 'EQA Rejected';
+  }
   return 'Open';
 }
 
