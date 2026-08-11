@@ -5,6 +5,7 @@ import { sortVariants } from '../../../../lib/variant-status';
 import {
   MODEL_VIEWER_ORIGIN,
   MODEL_VIEWER_SCRIPT_URL,
+  HDR_ORIGIN,
   originOf,
 } from '../../../../lib/model-viewer-config';
 import ModelViewerPage from './ModelViewerPage';
@@ -146,6 +147,13 @@ export default async function Page({
         <link rel="preconnect" href={glbOrigin} crossOrigin="anonymous" />
       )}
       <link rel="preconnect" href={MODEL_VIEWER_ORIGIN} crossOrigin="anonymous" />
+      {/* Environment maps live on a different host and are only
+          fetched if the reviewer picks a photographic environment.
+          The preconnect costs nothing when they don't, and saves
+          the DNS + TLS round trip when they do. */}
+      {HDR_ORIGIN && HDR_ORIGIN !== MODEL_VIEWER_ORIGIN && (
+        <link rel="preconnect" href={HDR_ORIGIN} crossOrigin="anonymous" />
+      )}
       <link
         rel="modulepreload"
         href={MODEL_VIEWER_SCRIPT_URL}

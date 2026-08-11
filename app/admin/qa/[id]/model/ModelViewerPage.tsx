@@ -15,8 +15,20 @@
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, Palette, RotateCcw, Ruler, X } from 'lucide-react';
+import { Check, ChevronDown, Palette, RotateCcw, Ruler, Sun, X } from 'lucide-react';
 import ModelViewer, { type ModelViewerHandle } from '../../../../components/ModelViewer';
+import {
+  VIEWER_MODES,
+  VIEWER_LIGHTING_KEY,
+  DEFAULT_LIGHTING,
+  EXPOSURE_RANGE,
+  SHADOW_INTENSITY_RANGE,
+  SHADOW_SOFTNESS_RANGE,
+  resolveLighting,
+  parseLighting,
+  type ViewerLighting,
+  type ModeOverride,
+} from '../../../../lib/model-viewer-config';
 
 // One colourway as the viewer needs it: enough to label the option
 // and to swap the model without going back to the server.
@@ -106,6 +118,82 @@ export default function ModelViewerPage({
   const viewerRef = useRef<ModelViewerHandle>(null);
   // Dimensions + axis-gizmo overlay toggle. On by default.
   const [showDims, setShowDims] = useState(true);
+
+  // ---- Lighting ----
+  // Always starts at the default so the server-rendered HTML and
+  // the first client render agree; the stored setup is read in an
+  // effect below. Initialising straight from localStorage would be
+  // a hydration mismatch (the server has no way to know it).
+  const [lighting, setLighting] = useState<ViewerLighting>(DEFAULT_LIGHTING);
+  const [lightOpen, setLightOpen] = useState(false);
+  const lightRef = useRef<HTMLDivElement>(null);
+  const resolved = resolveLighting(lighting);
+  // Chrome flips to light-on-dark whenever the backdrop is dark.
+  const onDark = resolved.dark;
+
+  useEffect(() => {
+    try {
+      setLighting(parseLighting(window.localStorage.getItem(VIEWER_LIGHTING_KEY)));
+    } catch {
+      // Private mode / storage disabled. The default is a perfectly
+      // good fallback, so there's nothing to recover from.
+    }
+  }, []);
+
+  // One writer for every control, so persistence can't be forgotten
+  // on a control added later.
+  function persist(next: ViewerLighting) {
+    try {
+      window.localStorage.setItem(VIEWER_LIGHTING_KEY, JSON.stringify(next));
+    } catch {
+      // Non-fatal: the change still applies for this session.
+    }
+    return next;
+  }
+
+  // Adjustments are stored PER MODE. A brightness set while judging
+  // metal would be wrong in the soft view, and resetting it on every
+  // switch would throw away a setup the reviewer just dialled in —
+  // so each mode keeps its own, and switching back restores it.
+  function adjust(patch: ModeOverride) {
+    setLighting((prev) =>
+      persist({
+        ...prev,
+        overrides: {
+          ...prev.overrides,
+          [prev.modeId]: { ...(prev.overrides[prev.modeId] ?? {}), ...patch },
+        },
+      })
+    );
+  }
+
+  function selectMode(modeId: string) {
+    setLighting((prev) => persist({ ...prev, modeId }));
+  }
+
+  // Clears only the ACTIVE mode's adjustments, back to its designed
+  // starting point. Deliberately not a global reset: wiping the
+  // other mode's setup is never what "reset" means to someone
+  // looking at one mode.
+  function resetMode() {
+    setLighting((prev) => {
+      const next = { ...prev, overrides: { ...prev.overrides } };
+      delete next.overrides[prev.modeId];
+      return persist(next);
+    });
+  }
+
+  // Close the lighting panel on an outside click, same as the
+  // colourway switcher.
+  useEffect(() => {
+    if (!lightOpen) return;
+    function onDown(e: MouseEvent) {
+      if (!lightRef.current?.contains(e.target as Node)) setLightOpen(false);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [lightOpen]);
+
   useEffect(() => {
     // window.opener is set when this tab was opened by another tab,
     // which is the path we expect ("View model" link). Only then is
@@ -140,8 +228,11 @@ export default function ModelViewerPage({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'linear-gradient(180deg, #fafafa, #ededed)',
+        background: resolved.backdrop,
         overflow: 'hidden',
+        // Cross-fade rather than snap: a hard cut between light and
+        // dark backdrops is jarring at full-viewport size.
+        transition: 'background 0.25s ease',
       }}
     >
       {/* Floating title — name + revision, top-left. Sits over the
@@ -157,8 +248,11 @@ export default function ModelViewerPage({
           zIndex: 10,
           padding: '14px 18px',
           paddingRight: 76,
-          background:
-            'linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0))',
+          // The scrim fades from the backdrop's own colour, so the
+          // title stays legible whichever preset is active.
+          background: onDark
+            ? 'linear-gradient(180deg, rgba(13,13,15,0.92), rgba(13,13,15,0))'
+            : 'linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0))',
           pointerEvents: 'none',
         }}
       >
@@ -168,7 +262,7 @@ export default function ModelViewerPage({
               fontSize: 16,
               fontWeight: 700,
               letterSpacing: '-0.01em',
-              color: '#0a0a0a',
+              color: onDark ? '#fafafa' : '#0a0a0a',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -176,7 +270,7 @@ export default function ModelViewerPage({
           >
             {name}
           </div>
-          <div style={{ fontSize: 12, color: '#525252', marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: onDark ? '#a3a3a3' : '#525252', marginTop: 2 }}>
             {clientName ? `${clientName} · ` : ''}Revision {revisionCount}
           </div>
         </div>
@@ -296,6 +390,158 @@ export default function ModelViewerPage({
         )}
 
         {glbUrl && (
+          <div ref={lightRef} className="crm-viewer-rail-item">
+            <button
+              type="button"
+              className={`crm-viewer-rail-btn${lightOpen ? ' is-active' : ''}`}
+              onClick={() => setLightOpen((v) => !v)}
+              title="Lighting"
+              aria-haspopup="dialog"
+              aria-expanded={lightOpen}
+            >
+              <Sun size={16} strokeWidth={1.75} aria-hidden="true" />
+              <span className="crm-viewer-rail-label">{resolved.mode.label}</span>
+            </button>
+
+            {lightOpen && (
+              <div
+                className="crm-viewer-rail-menu"
+                role="dialog"
+                aria-label="Lighting controls"
+                style={{ width: 268, padding: 12 }}
+              >
+                {/* ---- Review mode ---- */}
+                {/* The two modes differ in their environment map,
+                    which is what actually re-lights the model — the
+                    map supplies both the diffuse light and every
+                    specular reflection. See model-viewer-config. */}
+                <div style={panelLabelStyle}>Mode</div>
+                <div style={{ display: 'grid', gap: 2, marginBottom: 14 }}>
+                  {VIEWER_MODES.map((m) => {
+                    const isActive = m.id === resolved.mode.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => selectMode(m.id)}
+                        className={`crm-viewer-rail-option${
+                          isActive ? ' is-active' : ''
+                        }`}
+                        title={m.hint}
+                      >
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: 'block' }}>{m.label}</span>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: '#737373',
+                              display: 'block',
+                              whiteSpace: 'normal',
+                              lineHeight: 1.3,
+                            }}
+                          >
+                            {m.hint}
+                          </span>
+                        </span>
+                        {isActive && (
+                          <Check
+                            size={14}
+                            strokeWidth={2}
+                            aria-hidden="true"
+                            style={{ flexShrink: 0 }}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* ---- Adjustments ---- */}
+                {/* Sliders rather than more presets: "a bit less
+                    blown out" is the actual note a reviewer has, and
+                    no fixed preset lands on it. Each is remembered
+                    against the mode it was set in. */}
+                <div style={panelLabelStyle}>Adjustments</div>
+                <SliderRow
+                  label="Light intensity"
+                  hint="How strongly the environment lights the model — soft fill and reflected highlights together."
+                  value={resolved.exposure}
+                  range={EXPOSURE_RANGE}
+                  onChange={(v) => adjust({ exposure: v })}
+                />
+                <SliderRow
+                  label="Shadow"
+                  hint="Darkness of the contact shadow under the model."
+                  value={resolved.shadowIntensity}
+                  range={SHADOW_INTENSITY_RANGE}
+                  onChange={(v) => adjust({ shadowIntensity: v })}
+                />
+                <SliderRow
+                  label="Shadow blur"
+                  hint="0 is a hard edge, 1 fully diffuse."
+                  value={resolved.shadowSoftness}
+                  range={SHADOW_SOFTNESS_RANGE}
+                  onChange={(v) => adjust({ shadowSoftness: v })}
+                />
+
+                <div style={{ ...panelLabelStyle, marginTop: 12 }}>Backdrop</div>
+                <label style={checkRowStyle}>
+                  <input
+                    type="checkbox"
+                    checked={resolved.dark}
+                    onChange={(e) => adjust({ dark: e.target.checked })}
+                  />
+                  <span>Dark background</span>
+                </label>
+                {/* Only offered where there's a photographic
+                    environment to show — the built-in probe is
+                    procedural and would render a flat grey void. */}
+                {resolved.mode.allowSkybox && (
+                  <label
+                    style={checkRowStyle}
+                    title="Show the environment behind the model, so you can see what the glossy surfaces are reflecting."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={resolved.skybox}
+                      onChange={(e) => adjust({ skybox: e.target.checked })}
+                    />
+                    <span>Show environment</span>
+                  </label>
+                )}
+
+                <button
+                  type="button"
+                  onClick={resetMode}
+                  disabled={!resolved.modified}
+                  title={
+                    resolved.modified
+                      ? `Return ${resolved.mode.label} to its default settings`
+                      : 'Nothing adjusted on this mode'
+                  }
+                  style={{
+                    marginTop: 12,
+                    width: '100%',
+                    background: 'none',
+                    border: '1px solid #e5e5e5',
+                    borderRadius: 8,
+                    padding: '6px 8px',
+                    font: 'inherit',
+                    fontSize: 12,
+                    color: resolved.modified ? '#525252' : '#a3a3a3',
+                    cursor: resolved.modified ? 'pointer' : 'default',
+                  }}
+                >
+                  {resolved.modified
+                    ? `Reset ${resolved.mode.label}`
+                    : 'Default settings'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {glbUrl && (
           <button
             type="button"
             className="crm-viewer-rail-btn"
@@ -313,7 +559,7 @@ export default function ModelViewerPage({
           takes a CSS height string, so '100vh' makes it fill the
           window; its own background gradient matches the wrapper. */}
       {glbUrl ? (
-        <ModelViewer ref={viewerRef} src={glbUrl} alt={`${name} 3D model`} height="100vh" showDimensions={showDims} />
+        <ModelViewer ref={viewerRef} src={glbUrl} alt={`${name} 3D model`} height="100vh" showDimensions={showDims} lighting={lighting} />
       ) : (
         <div
           style={{
@@ -323,12 +569,12 @@ export default function ModelViewerPage({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#525252',
+            color: onDark ? '#a3a3a3' : '#525252',
             textAlign: 'center',
             padding: 24,
           }}
         >
-          <h3 style={{ color: '#0a0a0a', margin: '0 0 8px', fontSize: 16 }}>
+          <h3 style={{ color: onDark ? '#fafafa' : '#0a0a0a', margin: '0 0 8px', fontSize: 16 }}>
             No GLB uploaded
           </h3>
           <p style={{ margin: 0 }}>
@@ -347,13 +593,84 @@ export default function ModelViewerPage({
             right: 0,
             textAlign: 'center',
             fontSize: 12,
-            color: '#737373',
+            color: onDark ? '#a3a3a3' : '#737373',
             pointerEvents: 'none',
           }}
         >
           Drag to rotate · scroll to zoom · right-click to pan
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// Lighting panel bits
+// ============================================================
+const panelLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  color: '#737373',
+  marginBottom: 6,
+};
+
+const checkRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  fontSize: 13,
+  padding: '4px 2px',
+  cursor: 'pointer',
+};
+
+// A labelled slider with its live value. React's onChange on a
+// range input fires on every drag tick, which is what makes the
+// model re-light as the handle moves rather than only on release.
+function SliderRow({
+  label,
+  hint,
+  value,
+  range,
+  onChange,
+  format,
+}: {
+  label: string;
+  hint?: string;
+  value: number;
+  range: { min: number; max: number; step: number };
+  onChange: (v: number) => void;
+  // Overrides the readout. Used by Reflections, where a bare
+  // "0.00" reads as "no reflections" rather than "unmodified".
+  format?: (v: number) => string;
+}) {
+  return (
+    <div style={{ marginBottom: 10 }} title={hint}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 12,
+          color: '#525252',
+          marginBottom: 2,
+        }}
+      >
+        <span>{label}</span>
+        <span style={{ color: '#a3a3a3', fontVariantNumeric: 'tabular-nums' }}>
+          {format ? format(value) : value.toFixed(2)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        style={{ width: '100%', display: 'block', accentColor: '#0a0a0a' }}
+      />
     </div>
   );
 }

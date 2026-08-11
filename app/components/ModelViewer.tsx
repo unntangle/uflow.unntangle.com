@@ -5,6 +5,10 @@ import {
   MODEL_VIEWER_ORIGIN,
   MODEL_VIEWER_SCRIPT_URL,
   originOf,
+  DEFAULT_LIGHTING,
+  resolveLighting,
+  type ViewerLighting,
+  type ResolvedLighting,
 } from '../lib/model-viewer-config';
 
 // ============================================================
@@ -25,6 +29,10 @@ type Props = {
   // When true, overlay a bounding-box dimension cage (W×H×D labels)
   // plus an XYZ axis gizmo anchored at the model's centre pivot.
   showDimensions?: boolean;
+  // Which review mode + adjustments to render under. Applied to the
+  // live element rather than baked in at creation, so switching
+  // never re-downloads the GLB. See lib/model-viewer-config.ts.
+  lighting?: ViewerLighting;
 };
 
 // Minimal shape of the <model-viewer> custom element for the camera
@@ -76,6 +84,14 @@ function injectDimStyle() {
 .crm-axis-tip-y { background: #30a46c; }
 .crm-axis-tip-z { background: #0091ff; }
 .crm-dim-label { font: 600 12px Inter, system-ui, sans-serif; color: #0a0a0a; background: rgba(255,255,255,0.92); border: 1px solid #d4d4d4; border-radius: 6px; padding: 2px 8px; white-space: nowrap; transform: translate(-50%, -50%); box-shadow: 0 1px 5px rgba(0,0,0,0.12); pointer-events: none; }
+
+/* Dark-backdrop variant. The class goes on the <model-viewer>
+   element itself, so every hotspot and the SVG layer (both its
+   descendants) pick these up. Without the line/dot overrides the
+   gizmo is near-black on a near-black backdrop — i.e. invisible. */
+.crm-dim-dark .crm-dim-line { stroke: #e5e5e5; opacity: 0.5; }
+.crm-dim-dark .crm-axis-dot { background: #fff; border-color: #0a0a0a; box-shadow: 0 0 0 1px rgba(255,255,255,0.35); }
+.crm-dim-dark .crm-dim-label { color: #fafafa; background: rgba(23,23,23,0.92); border-color: #404040; box-shadow: 0 1px 5px rgba(0,0,0,0.4); }
 `;
   document.head.appendChild(st);
 }
@@ -98,8 +114,38 @@ function appendHint(rel: 'preconnect' | 'preload', href: string, as?: string) {
   document.head.appendChild(l);
 }
 
+// Writes a resolved lighting state onto a live <model-viewer>.
+// Split out so the main effect (element creation) and the lighting
+// effect (a control change) can't drift apart.
+//
+// environment-image is the one that actually re-lights the model:
+// it supplies the diffuse light AND every specular reflection.
+// Exposure and shadow only scale what it produces.
+//
+// The dark class lands on the element itself because the dimension
+// overlay's hotspots and SVG layer are its children — see the
+// .crm-dim-dark rules in injectDimStyle.
+function applyLighting(el: HTMLElement, r: ResolvedLighting) {
+  // Empty value means "use model-viewer's own default", which is
+  // expressed by the attribute being absent rather than blank.
+  if (r.environmentImage) el.setAttribute('environment-image', r.environmentImage);
+  else el.removeAttribute('environment-image');
+
+  if (r.skybox && r.environmentImage) {
+    el.setAttribute('skybox-image', r.environmentImage);
+  } else {
+    el.removeAttribute('skybox-image');
+  }
+
+  el.setAttribute('exposure', String(r.exposure));
+  el.setAttribute('shadow-intensity', String(r.shadowIntensity));
+  el.setAttribute('shadow-softness', String(r.shadowSoftness));
+  el.style.background = r.backdrop;
+  el.classList.toggle('crm-dim-dark', r.dark);
+}
+
 const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
-  { src, alt, height = 380, showDimensions = true },
+  { src, alt, height = 380, showDimensions = true, lighting = DEFAULT_LIGHTING },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -120,6 +166,13 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
   // Latest showDimensions value, readable from inside the (stable)
   // load handler without adding it to the main effect's deps.
   const showDimsRef = useRef(showDimensions);
+  // Same trick for lighting. The main effect rebuilds the element
+  // whenever `src` changes, and that fresh element starts with no
+  // lighting attributes — reading the current state from a ref at
+  // creation time is what stops a colourway switch from silently
+  // reverting the reviewer's chosen mode.
+  const resolved = resolveLighting(lighting);
+  const lightingRef = useRef(resolved);
   // Camera orbit captured the first time the model frames itself on
   // load. "Reset view" returns here so it matches exactly how the
   // model first appeared. Recaptured per src (a different model gets
@@ -155,6 +208,33 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     showDimsRef.current = showDimensions;
     overlayRef.current?.setVisible(showDimensions);
   }, [showDimensions]);
+
+  // Apply lighting to the live element. Deliberately its own effect
+  // rather than part of the main one: these are plain attribute
+  // writes that model-viewer picks up on the next frame, so a mode
+  // or slider change re-renders the existing scene instead of
+  // tearing the element down and re-downloading a model the user is
+  // already looking at. (Switching to the metal mode does fetch its
+  // HDR the first time — a few hundred KB — but the GLB is
+  // untouched, and the browser caches it thereafter.)
+  useEffect(() => {
+    lightingRef.current = resolved;
+    const el = mvRef.current;
+    if (el) applyLighting(el, resolved);
+    // resolveLighting returns a fresh object each render, so we key
+    // the effect on the fields that actually change rather than on
+    // object identity — otherwise every parent render would re-run
+    // it needlessly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    resolved.environmentImage,
+    resolved.exposure,
+    resolved.shadowIntensity,
+    resolved.shadowSoftness,
+    resolved.skybox,
+    resolved.dark,
+    resolved.backdrop,
+  ]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -216,8 +296,10 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
     // and their W/H/L tooltips are visible on load. Slightly zoomed
     // out (120%) so the labels clear the viewport edges + header.
     mv.setAttribute('camera-orbit', '45deg 75deg 120%');
-    mv.setAttribute('shadow-intensity', '1');
-    mv.setAttribute('exposure', '1');
+    // Lighting comes from the active state rather than fixed
+    // attributes. Read through the ref so an element rebuilt for a
+    // new src inherits whatever the reviewer currently has set.
+    applyLighting(mv, lightingRef.current);
     // Camera-orbit bounds, given as "theta phi radius":
     //   phi 0deg..180deg — full vertical tilt so the underside (and
     //     top) of the model can be inspected. model-viewer's default
@@ -440,24 +522,24 @@ const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelViewer(
             alignItems: 'center',
             justifyContent: 'center',
             gap: 14,
-            background: 'linear-gradient(180deg, #fafafa, #ededed)',
+            background: resolved.backdrop,
             pointerEvents: 'none',
             transition: 'opacity 0.4s ease',
             opacity: progress >= 100 ? 0 : 1,
           }}
         >
-          <div style={{ width: 200, height: 4, background: '#e0e0e0', borderRadius: 4, overflow: 'hidden' }}>
+          <div style={{ width: 200, height: 4, background: resolved.dark ? '#3f3f46' : '#e0e0e0', borderRadius: 4, overflow: 'hidden' }}>
             <div
               style={{
                 height: '100%',
                 width: `${progress}%`,
-                background: '#0a0a0a',
+                background: resolved.dark ? '#fafafa' : '#0a0a0a',
                 borderRadius: 4,
                 transition: 'width 0.2s ease',
               }}
             />
           </div>
-          <div style={{ fontSize: 12, color: '#737373', letterSpacing: '0.02em' }}>
+          <div style={{ fontSize: 12, color: resolved.dark ? '#a3a3a3' : '#737373', letterSpacing: '0.02em' }}>
             Loading 3D model… {progress}%
           </div>
         </div>
