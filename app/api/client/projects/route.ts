@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../../lib/auth';
 import { supabase } from '../../../lib/supabase';
 import { isOurPublicUrl } from '../../../lib/r2';
-import { VARIANT_SELECT, sortVariants } from '../../../lib/variant-status';
+import { VARIANT_SELECT, sortVariants, sortByLatest } from '../../../lib/variant-status';
 
 export const runtime = 'nodejs';
 
@@ -43,7 +43,10 @@ export async function GET() {
       // they do on the SSR dashboard: uflow_projects.status is
       // stale on any job whose variants have moved on their own,
       // so the client's buckets have to be derived from these.
-      `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), ${VARIANT_SELECT}`
+      // The references join drives the References column thumbnail
+      // (collapsed to thumb_url below, mirroring the SSR page so a
+      // refresh doesn't drop it).
+      `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), references:uflow_project_references(image_url, created_at), ${VARIANT_SELECT}`
     )
     .eq('client_id', auth.clientId)
     .order('updated_at', { ascending: false });
@@ -63,6 +66,7 @@ export async function GET() {
     const r = p as Record<string, unknown> & {
       client_feedback?: { revision_number: number | null }[] | null;
       variants?: { position?: number }[] | null;
+      references?: { image_url: string; created_at: string }[] | null;
     };
     const clientFeedback = Array.isArray(r.client_feedback)
       ? r.client_feedback
@@ -75,6 +79,10 @@ export async function GET() {
       )
     );
     const clientRevisionCount = clientRevisions.length;
+    const refs = Array.isArray(r.references) ? r.references : [];
+    const firstRef = [...refs].sort((x, y) =>
+      x.created_at < y.created_at ? -1 : 1
+    )[0];
     return {
       ...r,
       client_feedback: undefined,
@@ -83,10 +91,12 @@ export async function GET() {
         clientRevisionCount > 0 ? Math.max(...clientRevisions) : null,
       has_client_rejection: clientRevisionCount > 0,
       variants: sortVariants(r.variants),
+      thumb_url: firstRef?.image_url ?? null,
+      references: undefined,
     };
   });
 
-  return NextResponse.json({ projects });
+  return NextResponse.json({ projects: sortByLatest(projects) });
 }
 
 // ============================================================

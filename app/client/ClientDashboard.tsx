@@ -66,6 +66,11 @@ type Project = {
   // are where per-model state actually lives. Every bucket and
   // badge below derives from them; see lib/variant-status.ts.
   variants?: Variant[];
+  // URL of the earliest reference image, collapsed server-side
+  // from the uflow_project_references join. Null when the job was
+  // created without references. Drives the References column
+  // thumbnail; the full set still lives on the gallery page.
+  thumb_url?: string | null;
 };
 
 // A colourway. Carries its own status because Grey can be sitting
@@ -591,6 +596,69 @@ function downloadProjectsCsv(projects: Project[]) {
 }
 
 // ============================================================
+// References cell — thumbnail of the first reference image,
+// hyperlinked to the full gallery in a new tab (the same target
+// the old "View" text link used). Mirrors the admin dashboard's
+// ReferenceThumb so a job's References cell reads identically on
+// both sides.
+//
+// `thumb_url` is collapsed server-side from the references join,
+// so there's no per-row fetch here. When a job was created with
+// no references there's nothing to show, so we fall back to a
+// dim em-dash — deliberately NOT a link, since the gallery would
+// just render its empty state.
+//
+// The <img> is intentionally raw rather than next/image: these
+// are remote R2 URLs on arbitrary hosts, and adding them to
+// next.config remotePatterns is a bigger change than this column
+// warrants.
+// ============================================================
+function ReferenceThumb({ project }: { project: Project }) {
+  if (!project.thumb_url) {
+    return (
+      <span
+        style={{ color: 'var(--text-faint)' }}
+        title="No reference images attached to this job"
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <a
+      href={crmPath(`/admin/qa/${project.id}/references`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open the reference gallery for ${project.name}`}
+      style={{
+        display: 'inline-block',
+        lineHeight: 0,
+        border: '1px solid var(--border)',
+        borderRadius: 6,
+        overflow: 'hidden',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={project.thumb_url}
+        alt=""
+        width={44}
+        height={44}
+        loading="lazy"
+        decoding="async"
+        style={{
+          width: 44,
+          height: 44,
+          objectFit: 'cover',
+          display: 'block',
+          background: 'var(--surface-2, transparent)',
+        }}
+      />
+    </a>
+  );
+}
+
+// ============================================================
 // Helpers
 // ============================================================
 function EmptyMini({ message }: { message: string }) {
@@ -737,14 +805,7 @@ function ProjectTable({
               </span>
             </td>
             <td>
-              <a
-                href={crmPath(`/admin/qa/${p.id}/references`)}
-                target="_blank"
-                rel="noreferrer"
-                className="crm-link"
-              >
-                View
-              </a>
+              <ReferenceThumb project={p} />
             </td>
             {showRevision && (
               <td>

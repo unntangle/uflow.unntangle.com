@@ -39,6 +39,9 @@ type Project = {
   // rows hold per-model state, so the Status column has to be
   // derived from them rather than from the product's own column.
   variants?: Variant[];
+  // Earliest reference image, collapsed server-side. Drives the
+  // References column thumbnail; null when the job has none.
+  thumb_url?: string | null;
 };
 
 type Variant = {
@@ -227,14 +230,7 @@ export default function ListClientJobsPage({
                         </span>
                       </td>
                       <td>
-                        <a
-                          href={crmPath(`/admin/qa/${p.id}/references`)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="crm-link"
-                        >
-                          View
-                        </a>
+                        <ReferenceThumb project={p} />
                       </td>
                       <td>
                         {rounds === 0 ? (
@@ -410,4 +406,56 @@ function ClientStatusPill({ label }: { label: string }) {
   else if (label === 'EQA Rejected') cls = 'crm-badge-rejected';
   else if (label === 'EQA') cls = 'crm-badge-client-review';
   return <span className={`crm-badge ${cls}`}>{label}</span>;
+}
+
+// ============================================================
+// References cell — thumbnail of the first reference image,
+// linked to the full gallery. Same treatment as the Overview
+// dashboard and the admin table, so the column reads identically
+// everywhere. Falls back to a dim em-dash when the job has no
+// references (not a link — the gallery would just be empty).
+// ============================================================
+function ReferenceThumb({ project }: { project: Project }) {
+  if (!project.thumb_url) {
+    return (
+      <span
+        style={{ color: 'var(--text-faint)' }}
+        title="No reference images attached to this job"
+      >
+        &mdash;
+      </span>
+    );
+  }
+  return (
+    <a
+      href={crmPath(`/admin/qa/${project.id}/references`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open the reference gallery for ${project.name}`}
+      style={{
+        display: 'inline-block',
+        lineHeight: 0,
+        border: '1px solid var(--border)',
+        borderRadius: 6,
+        overflow: 'hidden',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={project.thumb_url}
+        alt=""
+        width={44}
+        height={44}
+        loading="lazy"
+        decoding="async"
+        style={{
+          width: 44,
+          height: 44,
+          objectFit: 'cover',
+          display: 'block',
+          background: 'var(--surface-2, transparent)',
+        }}
+      />
+    </a>
+  );
 }

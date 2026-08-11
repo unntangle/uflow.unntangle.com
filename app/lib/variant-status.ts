@@ -200,3 +200,64 @@ export function sortVariants<T extends { position?: number }>(
     (a, b) => (a.position ?? 0) - (b.position ?? 0)
   );
 }
+
+// ============================================================
+// Recency: which job was touched most recently?
+// ============================================================
+// `order('updated_at', desc)` on uflow_projects is no longer a
+// reliable "latest first", for the same reason its status column
+// isn't reliable: since the 2026-08-06 variants migration, every
+// pipeline transition (start, upload, IQA decision, client
+// sign-off) stamps updated_at on the COLOURWAY row and leaves the
+// product's own column untouched. A job whose model moved to EQA
+// five minutes ago can therefore still carry a product-level
+// updated_at from the day it was created, and sink below jobs
+// that haven't moved in weeks.
+//
+// The honest answer is the most recent timestamp anywhere on the
+// product: its own column OR any of its colourways. Products with
+// no variant rows (pre-migration data) fall back to their own
+// column, so nothing regresses for legacy jobs.
+//
+// Returns epoch milliseconds. Unparseable / missing timestamps
+// yield 0 so they sort last rather than throwing NaN into the
+// comparator (NaN comparisons are always false, which silently
+// corrupts a sort).
+export type TimestampedProduct = {
+  updated_at?: string | null;
+  created_at?: string | null;
+  variants?: { updated_at?: string | null }[] | null;
+};
+
+function toMillis(value: string | null | undefined): number {
+  if (!value) return 0;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+export function effectiveUpdatedAt(p: TimestampedProduct): number {
+  let latest = toMillis(p.updated_at);
+  for (const v of p.variants ?? []) {
+    const t = toMillis(v?.updated_at);
+    if (t > latest) latest = t;
+  }
+  // A job created but never touched since may have no usable
+  // updated_at at all; created_at still places it correctly
+  // relative to older work.
+  return latest || toMillis(p.created_at);
+}
+
+// Most recently active first. This is the DEFAULT order for every
+// product list — the order a table shows when no column sort is
+// active — so the newest job, and anything that just moved stage,
+// lands in the first row.
+//
+// Ties break on created_at (newer first) so two rows stamped in
+// the same millisecond don't swap places between renders.
+export function sortByLatest<T extends TimestampedProduct>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const diff = effectiveUpdatedAt(b) - effectiveUpdatedAt(a);
+    if (diff !== 0) return diff;
+    return toMillis(b.created_at) - toMillis(a.created_at);
+  });
+}

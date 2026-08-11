@@ -1,6 +1,6 @@
 import { requireUser } from '../lib/auth';
 import { supabase } from '../lib/supabase';
-import { VARIANT_SELECT, sortVariants } from '../lib/variant-status';
+import { VARIANT_SELECT, sortVariants, sortByLatest } from '../lib/variant-status';
 import ClientDashboard from './ClientDashboard';
 
 // ============================================================
@@ -59,9 +59,18 @@ export default async function ClientPage() {
         // (or worse) on the product row. Without the colourways in
         // hand the dashboard buckets on a stale column and the
         // client's EQA queue comes back empty.
-        `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), ${VARIANT_SELECT}`
+        //
+        // The references join drives the References column
+        // thumbnail. We pull the whole set (one small row each)
+        // and collapse to the earliest below, so the table can
+        // render a thumbnail without an N+1 fetch per row.
+        `id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), client_feedback:uflow_client_feedback_images(revision_number), references:uflow_project_references(image_url, created_at), ${VARIANT_SELECT}`
       )
       .eq('client_id', user.clientId)
+      // Ordering is finalised client-side by sortByLatest below —
+      // the DB can only order on the product's own updated_at,
+      // which goes stale the moment a colourway moves. This just
+      // gives the normaliser a sensible starting order.
       .order('updated_at', { ascending: false }),
     supabase()
       .from('uflow_clients')
@@ -91,6 +100,9 @@ export default async function ClientPage() {
     // product's client-facing state is a roll-up of these rather
     // than the (legacy) uflow_projects.status column.
     variants?: { position?: number }[] | null;
+    // Reference images attached at job creation, collapsed to a
+    // single thumbnail URL below.
+    references?: { image_url: string; created_at: string }[] | null;
   };
   const normalised = (projects || []).map((p) => {
     const r = p as Joined & Record<string, unknown>;
@@ -113,6 +125,10 @@ export default async function ClientPage() {
     const clientRevisionCount = clientRevisions.length;
     const latestClientRevision =
       clientRevisionCount > 0 ? Math.max(...clientRevisions) : null;
+    const refs = Array.isArray(r.references) ? r.references : [];
+    const firstRef = [...refs].sort((x, y) =>
+      x.created_at < y.created_at ? -1 : 1
+    )[0];
     return {
       ...r,
       client: c ?? { slug: '', name: '' },
@@ -130,12 +146,19 @@ export default async function ClientPage() {
       // PostgREST can't order an embedded resource independently
       // of its parent, so ordering happens here.
       variants: sortVariants(r.variants),
+      // Earliest reference = the table thumbnail. Sorted here for
+      // the same PostgREST reason. Null when the job was created
+      // without references.
+      thumb_url: firstRef?.image_url ?? null,
+      // Strip the raw join out of the wire payload; the component
+      // only consumes the single URL above.
+      references: undefined,
     };
   });
 
   return (
     <ClientDashboard
-      initialProjects={normalised as never}
+      initialProjects={sortByLatest(normalised) as never}
       brand={brand ?? { id: user.clientId, slug: '', name: 'Unknown brand' }}
       currentUser={{
         name: user.name,
