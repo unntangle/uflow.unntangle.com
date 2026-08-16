@@ -55,6 +55,28 @@ function primaryStatus(p: Project): ProjectStatus {
 }
 
 // ============================================================
+// uploadedAt — what the "Uploaded" cell shows on a parent row.
+//
+// Same reasoning as primaryStatus above. uflow_projects.updated_at
+// is legacy: finalize-upload writes ONLY the targeted colourway's
+// row, so the product's own timestamp stops moving the moment
+// uploads start going through variants. The column was showing
+// the job's last product-level touch — often its creation date —
+// rather than when a file was last delivered.
+//
+// The parent row IS the original, so it takes the primary
+// variant's stamp; the colourway child rows already render their
+// own. Falls back to the product's column only when there are no
+// variant rows at all (pre-migration data), where it's the only
+// timestamp there is.
+// ============================================================
+function uploadedAt(p: Project): string {
+  return (
+    (p.variants ?? []).find((v) => v.is_primary)?.updated_at ?? p.updated_at
+  );
+}
+
+// ============================================================
 // Types
 // ============================================================
 type Project = {
@@ -242,7 +264,8 @@ export default function ListJobsPage({
     name: (p) => p.name,
     artist: (p) => p.assignee?.name ?? null,
     created: (p) => new Date(p.created_at),
-    updated: (p) => new Date(p.updated_at),
+    // Sorts on the same value the cell renders.
+    updated: (p) => new Date(uploadedAt(p)),
     // The original's status, matching the Overview — the
     // project's own column is stale once a colourway moves.
     status: (p) => statusRank(primaryStatus(p)),
@@ -468,7 +491,7 @@ export default function ListJobsPage({
                       {new Date(p.created_at).toLocaleDateString()}
                     </td>
                     <td style={{ color: 'var(--text-dim)' }}>
-                      {new Date(p.updated_at).toLocaleString(undefined, {
+                      {new Date(uploadedAt(p)).toLocaleString(undefined, {
                         day: '2-digit',
                         month: '2-digit',
                         year: 'numeric',

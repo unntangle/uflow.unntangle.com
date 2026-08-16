@@ -19,6 +19,7 @@ import {
   anyVariantIn,
   allVariantsApproved,
   sortVariants,
+  effectiveUpdatedAt,
 } from '../lib/variant-status';
 
 // ============================================================
@@ -877,6 +878,44 @@ function leadVariant(
   );
 }
 
+// ------------------------------------------------------------
+// uploadedAt
+//
+// The timestamp the "Uploaded" column shows for a product row.
+//
+// It is NOT uflow_projects.updated_at, which is what this column
+// used to read. Since the variants migration, finalize-upload
+// writes ONLY the targeted colourway ("When a variant was
+// targeted we write ONLY the variant row"), so the product's own
+// timestamp freezes at whatever last touched the product itself
+// — usually the day it was created. That's why a row could show
+// an Uploaded date older than the file its own View GLB opens.
+//
+// Inside a stage queue the row leads with one colourway and
+// badges that colourway's status, revision and asset, so the
+// date has to come from the same row — otherwise "Uploaded"
+// describes a different file than the rest of the line does.
+//
+// Outside a stage queue (Open Jobs, Approved) the row stands for
+// the whole product, so the honest answer is the newest stamp
+// anywhere on it. effectiveUpdatedAt already encodes that rule,
+// including the fallback for pre-migration rows with no variants.
+//
+// Returns null when there's no usable timestamp at all, so the
+// cell renders an em-dash rather than 01/01/1970.
+// ------------------------------------------------------------
+function uploadedAt(
+  p: Project,
+  lead: Variant | null,
+  queueStatuses?: Project['status'][]
+): string | null {
+  if (queueStatuses && queueStatuses.length > 0 && lead) {
+    return lead.updated_at ?? null;
+  }
+  const ms = effectiveUpdatedAt(p);
+  return ms ? new Date(ms).toISOString() : null;
+}
+
 // True when every colourway is still a draft, i.e. nothing has
 // been started anywhere. Delete purges the WHOLE job, so it can't
 // key off one colourway.
@@ -988,7 +1027,16 @@ function ProjectTable({
     revision: (p) =>
       leadVariant(p, meta.queueStatuses)?.revision_count ?? p.revision_count,
     created: (p) => new Date(p.created_at),
-    updated: (p) => new Date(p.updated_at),
+    // Sorts on the same value the cell renders, so clicking
+    // Uploaded orders rows by the date they actually show.
+    updated: (p) => {
+      const at = uploadedAt(
+        p,
+        leadVariant(p, meta.queueStatuses),
+        meta.queueStatuses
+      );
+      return at ? new Date(at) : null;
+    },
     status: (p) =>
       statusRank(leadVariant(p, meta.queueStatuses)?.status ?? p.status),
   });
@@ -1153,7 +1201,10 @@ function ProjectTable({
               </td>
             )}
             <DateCell value={p.created_at} />
-            <DateCell value={p.updated_at} withTime />
+            <DateCell
+              value={uploadedAt(p, lead, meta.queueStatuses)}
+              withTime
+            />
             {meta.showAsset && (
               <td>
                 {leadGlb && (
