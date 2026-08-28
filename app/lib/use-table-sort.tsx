@@ -234,6 +234,13 @@ function SortGlyph({ dir }: { dir: SortDir | null }) {
 // ============================================================
 export function statusRank(status: string): number {
   const order: Record<string, number> = {
+    // Held jobs sort ahead of everything, not into the middle of
+    // the pipeline. on_hold is a parking state, so its "stage" is
+    // whatever it paused at — a value this function can't see. A
+    // negative rank at least keeps every held row together at one
+    // end of the column instead of scattering them under a stage
+    // they're no longer in.
+    on_hold: -1,
     draft: 0,
     wip: 1,
     iqa_wip: 2,

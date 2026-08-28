@@ -24,6 +24,22 @@ export default function StatusBadge({
     }
     return <span className="crm-badge crm-badge-draft">YTA</span>;
   }
+  if (status === 'on_hold') {
+    // Parked by the client. Deliberately its own colour rather
+    // than reusing draft's grey or WIP's amber: a held job is
+    // neither waiting to start nor being worked on, and reading
+    // it as either would put it back in someone's mental queue.
+    // Checked early so it wins over every stage below — the row
+    // it sits on is blocked regardless of where it paused.
+    return (
+      <span
+        className="crm-badge crm-badge-hold"
+        title="Paused by the client. Nobody should be working on this until it's resumed."
+      >
+        On Hold by Client
+      </span>
+    );
+  }
   if (status === 'qa_pending') {
     return <span className="crm-badge crm-badge-pending">IQA</span>;
   }

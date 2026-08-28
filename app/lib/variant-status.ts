@@ -25,6 +25,17 @@ import { ProjectStatus } from './supabase';
 // IQA feedback vs. revising EQA feedback) says nothing about how
 // far along the work is. Both rejection states likewise.
 export const STATUS_RANK: Record<ProjectStatus, number> = {
+  // Below draft, so a held colourway DOMINATES the roll-up: a
+  // product with one paused colourway reports 'on_hold' and
+  // badges as held. That's deliberate. The roll-up answers "how
+  // far along is this product", and a product the client has
+  // paused part of is not progressing — reporting the sibling's
+  // stage instead would hide the block behind an encouraging
+  // badge.
+  //
+  // It also keeps allVariantsApproved honest: a product with a
+  // held colourway can never roll up to 'approved'.
+  on_hold: -1,
   draft: 0,
   iqa_rejected: 1,
   eqa_rejected: 1,
@@ -109,6 +120,13 @@ export function anyVariantIn(
 
 // True when every colourway is signed off. The only queue that
 // genuinely needs "all" rather than "any".
+//
+// There is deliberately no allVariantsOnHold counterpart. Hold
+// is an "any" queue like the stage queues: one paused colourway
+// puts the product under Hold and takes it out of Open Jobs.
+// Approved is the odd one out because a product isn't finished
+// until every colourway is — a hold, by contrast, blocks the
+// product as soon as it touches any part of it.
 export function allVariantsApproved(p: ProductLike): boolean {
   return rollupStatus(p) === 'approved';
 }
@@ -187,8 +205,22 @@ export function hasExtraVariants(
 // roll-up. Kept here so the field list can't drift between the
 // admin SSR select, /api/projects, and the per-role dashboards —
 // a missing column would silently change how a product buckets.
+//
+// hold_prev_status is deliberately NOT in this list. Only the
+// Change Status page needs it, and PostgREST fails the WHOLE
+// query when a selected column is missing — so putting a newer
+// column here would take down every page that shares the
+// constant if the app ever ran ahead of a migration. Pages that
+// want it use VARIANT_SELECT_WITH_HOLD below.
 export const VARIANT_SELECT =
   'variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at)';
+
+// The same embed plus the hold bookkeeping column. Requires
+// migrations/2026-08-28_add_on_hold_status.sql. Used only by the
+// Change Status page, which is the one surface that has to name
+// the stage a resumed row will land back in.
+export const VARIANT_SELECT_WITH_HOLD =
+  'variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at, hold_prev_status)';
 
 // PostgREST can't order an embedded resource independently of its
 // parent, so ordering happens after the fetch. Every normaliser

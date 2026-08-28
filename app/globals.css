@@ -1802,3 +1802,21 @@ body.crm-root {
   max-width: 420px;
   margin: 0;
 }
+
+/* ----- On Hold by Client -----------------------------------
+   Colour-only variant on top of .crm-badge, same as the other
+   status pills. Violet is unused elsewhere in the status set,
+   which is the point: hold is not a stage, so it shouldn't read
+   as a neighbour of draft (grey), WIP (amber), IQA (orange),
+   rejected (red), EQA (blue) or approved (green).
+
+   The label is the longest of the set, so it gets nowrap to stop
+   it breaking across two lines and pushing the Status column
+   taller than every other row.
+   ------------------------------------------------------------ */
+.crm-root .crm-badge-hold {
+  color: #6d28d9;
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(109, 40, 217, 0.35);
+  white-space: nowrap;
+}

@@ -42,6 +42,7 @@ export const STATUS_LABELS: Record<ProjectStatus, string> = {
   client_review: 'EQA',
   eqa_rejected: 'EQA Rejected',
   approved: 'Approved',
+  on_hold: 'On Hold by Client',
 };
 
 // What a row reads as on screen right now. Takes the assignment
@@ -58,23 +59,44 @@ export function currentStatusLabel(
 // ============================================================
 // Selectable targets
 // ============================================================
-// Deliberately just the two draft flavours: this page sends a
-// job back to the start of the pipeline, it isn't a free-form
-// jump to any stage. Everything forward of draft is reached by
-// doing the work (Start, upload, approve, reject), and those
-// paths write revision counts and files that a raw status write
-// would leave inconsistent.
-export type StatusTarget = 'yta' | 'yts';
+// Two kinds of move, and they are not the same kind of thing.
+//
+// RESET (yta / yts) sends a job back to the START of the
+// pipeline. Everything forward of draft is reached by doing the
+// work (Start, upload, approve, reject), and those paths write
+// revision counts and files that a raw status write would leave
+// inconsistent — which is why no stage in between is offered.
+//
+// PARK (hold / resume) takes a job OUT of the pipeline and puts
+// it back. On Hold by Client isn't a stage, so it doesn't
+// contradict the rule above: holding doesn't claim the work
+// reached some point it didn't, it claims nobody is allowed to
+// touch it. Resume is its exact inverse — it restores the stage
+// the job paused at, read from hold_prev_status on the server.
+//
+// Resume is the reason hold is safe to offer at all. Without it
+// the only way out of a hold would be a reset, so pausing a job
+// awaiting client sign-off would cost it the entire pipeline
+// back to draft.
+export type StatusTarget = 'yta' | 'yts' | 'hold' | 'resume';
 
-export const STATUS_TARGET_OPTIONS: {
+export type StatusTargetOption = {
   value: StatusTarget;
   label: string;
-  // The status actually written. Both are 'draft' — see above.
-  status: ProjectStatus;
+  // The status actually written. 'yta' and 'yts' are both
+  // 'draft' — see the YTA/YTS note above.
+  //
+  // null on 'resume': the destination is whatever the row was
+  // doing before it was held, which lives in hold_prev_status
+  // and is resolved server-side. The client sends { resume: true }
+  // rather than a status it would have to guess.
+  status: ProjectStatus | null;
   // Whether picking this also removes the artist from the job.
   clearsAssignment: boolean;
   hint: string;
-}[] = [
+};
+
+export const STATUS_TARGET_OPTIONS: StatusTargetOption[] = [
   {
     value: 'yta',
     label: 'YTA — Yet To Assign',
@@ -89,7 +111,61 @@ export const STATUS_TARGET_OPTIONS: {
     clearsAssignment: false,
     hint: "Back to the start, artist kept. It reappears in that artist's queue waiting for them to click Start.",
   },
+  {
+    value: 'hold',
+    label: 'On Hold by Client',
+    status: 'on_hold',
+    // The artist stays on the job. A hold is expected to end, and
+    // the person who was building it is who should pick it back
+    // up — unassigning would quietly turn a pause into a
+    // reallocation.
+    clearsAssignment: false,
+    hint: 'Parks the job. It leaves every queue — the artist’s list, IQA, EQA and Open Jobs — and appears under Hold until it’s resumed. Where it paused is remembered.',
+  },
+  {
+    value: 'resume',
+    label: 'Resume',
+    status: null,
+    clearsAssignment: false,
+    hint: 'Puts the job back in the stage it was in when it went on hold, and it reappears in that queue.',
+  },
 ];
+
+// ------------------------------------------------------------
+// targetsFor
+//
+// Which options a given row should actually offer. Hold and
+// resume are mutually exclusive by definition — offering
+// “Resume” on a job that was never paused is meaningless, and
+// offering “On Hold” as a change on a job already held is a
+// no-op the Save button would have to guard anyway.
+//
+// Held rows still get yta / yts. That's the escape hatch for a
+// hold recorded before hold_prev_status existed, or one whose
+// origin stage no longer makes sense to return to.
+// ------------------------------------------------------------
+export function targetsFor(status: ProjectStatus): StatusTargetOption[] {
+  const by = (v: StatusTarget) =>
+    STATUS_TARGET_OPTIONS.find((o) => o.value === v)!;
+  if (status === 'on_hold') {
+    // 'hold' leads so the dropdown opens on the row's current
+    // state rather than pre-selecting a change — see currentTarget.
+    return [by('hold'), by('resume'), by('yta'), by('yts')];
+  }
+  return [by('yta'), by('yts'), by('hold')];
+}
+
+// The label a resume option should carry for a specific row.
+// The generic "Resume" says nothing about where the job lands,
+// which is the one thing the admin needs to know before
+// committing. Falls back to YTA/YTS wording when the origin
+// wasn't recorded, matching what the server does.
+export function resumeLabel(
+  prev: ProjectStatus | null | undefined,
+  assigned: boolean
+): string {
+  return `Resume — back to ${currentStatusLabel(prev ?? 'draft', assigned)}`;
+}
 
 const TARGET_VALUES = new Set<string>(
   STATUS_TARGET_OPTIONS.map((o) => o.value)
@@ -123,6 +199,11 @@ export function currentTarget(
   status: ProjectStatus,
   assigned: boolean
 ): StatusTarget | null {
+  // A held row IS sitting on a selectable target, so the dropdown
+  // opens on “On Hold by Client” with Save disabled, rather than
+  // on a “Leave as …” placeholder plus a separate identical
+  // option underneath it.
+  if (status === 'on_hold') return 'hold';
   if (status !== 'draft') return null;
   return assigned ? 'yts' : 'yta';
 }

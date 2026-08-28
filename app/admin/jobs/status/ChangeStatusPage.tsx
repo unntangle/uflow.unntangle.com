@@ -17,13 +17,14 @@ import {
 } from '../../../lib/use-table-sort';
 import { extraVariants, hasExtraVariants } from '../../../lib/variant-status';
 import {
-  STATUS_TARGET_OPTIONS,
   StatusTarget,
   currentStatusLabel,
   currentTarget,
+  resumeLabel,
   targetHint,
   targetLabel,
   targetOption,
+  targetsFor,
 } from '../../../lib/status-options';
 
 // ============================================================
@@ -38,6 +39,7 @@ type Variant = {
   is_primary: boolean;
   position: number;
   updated_at: string;
+  hold_prev_status: ProjectStatus | null;
 };
 
 type Project = {
@@ -49,6 +51,11 @@ type Project = {
   assigned_to: string | null;
   updated_at: string;
   client_id: string;
+  hold_prev_status: ProjectStatus | null;
+  // URL of the earliest reference image, collapsed server-side
+  // from the uflow_project_references join. Null when the job was
+  // created without references.
+  thumb_url: string | null;
   client: { slug: string; name: string };
   assignee: { id: string; name: string } | null;
   variants: Variant[];
@@ -94,6 +101,12 @@ type RowTarget = {
   variantId: string | null;
   status: ProjectStatus;
   assigned: boolean;
+  // Where this row was before it went On Hold by Client, read
+  // straight off the row it targets. Only used to LABEL the
+  // Resume option — the server reads the column itself when the
+  // move is actually made, so a stale value here can mislabel a
+  // button but can never send the job somewhere wrong.
+  heldFrom: ProjectStatus | null;
 };
 
 function parentTarget(p: Project): RowTarget {
@@ -104,6 +117,9 @@ function parentTarget(p: Project): RowTarget {
     variantId: primary?.id ?? null,
     status: primary?.status ?? p.status,
     assigned: p.assigned_to !== null,
+    heldFrom: primary
+      ? primary.hold_prev_status ?? null
+      : p.hold_prev_status ?? null,
   };
 }
 
@@ -114,7 +130,73 @@ function variantTarget(p: Project, v: Variant): RowTarget {
     variantId: v.id,
     status: v.status,
     assigned: p.assigned_to !== null,
+    heldFrom: v.hold_prev_status ?? null,
   };
+}
+
+// ============================================================
+// References cell — thumbnail of the first reference image,
+// linked to the full gallery in a new tab.
+//
+// Same component the Overview uses, kept as a local copy rather
+// than lifted into a shared module: it's twenty lines, and the
+// two pages will drift (this one has no lightbox, List Jobs has
+// a strip rather than a single image). Extracting it now would
+// buy a shared abstraction that neither page fully wants.
+//
+// `thumb_url` is collapsed server-side from the references join,
+// so there's no per-row fetch. Jobs created without references
+// get a dim em-dash — deliberately not a link, since the gallery
+// would only render its empty state.
+//
+// Raw <img> rather than next/image on purpose: these are remote
+// R2/Cloudinary URLs on arbitrary hosts, and adding them to
+// next.config remotePatterns is a bigger change than one column
+// warrants.
+// ============================================================
+function ReferenceThumb({ project }: { project: Project }) {
+  if (!project.thumb_url) {
+    return (
+      <span
+        style={{ color: 'var(--text-faint)' }}
+        title="No reference images attached to this job"
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <a
+      href={crmPath(`/admin/qa/${project.id}/references`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open the reference gallery for ${project.name}`}
+      style={{
+        display: 'inline-block',
+        lineHeight: 0,
+        border: '1px solid var(--border)',
+        borderRadius: 6,
+        overflow: 'hidden',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={project.thumb_url}
+        alt=""
+        width={44}
+        height={44}
+        loading="lazy"
+        decoding="async"
+        style={{
+          width: 44,
+          height: 44,
+          objectFit: 'cover',
+          display: 'block',
+          background: 'var(--surface-2, transparent)',
+        }}
+      />
+    </a>
+  );
 }
 
 // ============================================================
@@ -235,11 +317,23 @@ export default function ChangeStatusPage({
       const res = await crmFetch(`/api/projects/${target.projectId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          status: opt.status,
-          variant_id: target.variantId,
-          clear_assignment: opt.clearsAssignment,
-        }),
+        // Resume carries no status: its destination is the stage
+        // recorded in hold_prev_status, which only the server can
+        // read. Sending a guess here would race a hold applied
+        // from another tab since this page loaded.
+        body: JSON.stringify(
+          to === 'resume'
+            ? {
+                resume: true,
+                variant_id: target.variantId,
+                clear_assignment: false,
+              }
+            : {
+                status: opt.status,
+                variant_id: target.variantId,
+                clear_assignment: opt.clearsAssignment,
+              }
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -249,6 +343,17 @@ export default function ChangeStatusPage({
         });
         return;
       }
+
+      // What actually landed. Taken from the response rather than
+      // from `opt` because resume's destination is decided server
+      // side, and because `held_from` is bookkeeping this page
+      // never computes — patching it locally is what keeps the
+      // Resume option's label correct after a hold without a
+      // reload.
+      const landedStatus: ProjectStatus =
+        (data?.to as ProjectStatus) ?? (opt.status as ProjectStatus);
+      const landedHeldFrom: ProjectStatus | null =
+        (data?.held_from as ProjectStatus | null) ?? null;
 
       setProjects((prev) =>
         prev.map((p) => {
@@ -263,11 +368,21 @@ export default function ChangeStatusPage({
             return {
               ...base,
               variants: base.variants.map((v) =>
-                v.id === target.variantId ? { ...v, status: opt.status } : v
+                v.id === target.variantId
+                  ? {
+                      ...v,
+                      status: landedStatus,
+                      hold_prev_status: landedHeldFrom,
+                    }
+                  : v
               ),
             };
           }
-          return { ...base, status: opt.status };
+          return {
+            ...base,
+            status: landedStatus,
+            hold_prev_status: landedHeldFrom,
+          };
         })
       );
 
@@ -286,6 +401,17 @@ export default function ChangeStatusPage({
     if (!to) return;
     if (to === currentTarget(target.status, target.assigned)) return;
     setConfirming({ target, label, to });
+  }
+
+  // The label for one option ON ONE ROW. Everything except
+  // Resume is fixed copy from status-options; Resume has to name
+  // the stage THIS row will land back in, which is per-row data.
+  // A bare “Resume” would leave the admin confirming a move
+  // without knowing where it goes.
+  function optionLabel(target: RowTarget, value: StatusTarget): string {
+    return value === 'resume'
+      ? resumeLabel(target.heldFrom, target.assigned)
+      : targetLabel(value);
   }
 
   // Shared renderer for the dropdown + Save pair, used by both the
@@ -337,9 +463,12 @@ export default function ChangeStatusPage({
               Leave as {currentStatusLabel(target.status, target.assigned)}…
             </option>
           )}
-          {STATUS_TARGET_OPTIONS.map((o) => (
+          {/* Per-row rather than the full list: a held row is the
+              only one that can be resumed, and a row that isn't
+              held has nothing to resume to. targetsFor decides. */}
+          {targetsFor(target.status).map((o) => (
             <option key={o.value} value={o.value}>
-              {o.label}
+              {optionLabel(target, o.value)}
             </option>
           ))}
         </select>
@@ -411,7 +540,8 @@ export default function ChangeStatusPage({
               <h1 className="crm-page-title">Change Status</h1>
               <p className="crm-page-sub">
                 Send a job back to the start of the pipeline — unassigned
-                (YTA) or with its artist kept (YTS).
+                (YTA) or with its artist kept (YTS) — or park it On Hold
+                by Client and resume it where it left off.
               </p>
             </div>
             <button
@@ -440,7 +570,9 @@ export default function ChangeStatusPage({
             Resetting a job does not touch its revision count, uploaded
             files, or feedback history, and it notifies no one. A job pulled
             back from review disappears from that reviewer&apos;s queue
-            immediately.
+            immediately. A job put On Hold leaves every queue at once and
+            only comes back when someone resumes it here — nothing releases
+            a hold automatically.
           </div>
 
           <div style={{ marginBottom: 16, maxWidth: 360 }}>
@@ -474,8 +606,15 @@ export default function ChangeStatusPage({
                     sortKey="name"
                     sort={sort}
                     onSort={onSort}
-                    style={{ width: '24%' }}
+                    // Left, to sit over the name + slug beneath it.
+                    // The default cell centring pulls a header
+                    // button to the middle of its column, which
+                    // reads as belonging to no column in
+                    // particular once the values under it are
+                    // flush left.
+                    style={{ width: '22%', textAlign: 'left' }}
                   />
+                  <th style={{ width: 64 }}>References</th>
                   <SortableTh
                     label="Client"
                     sortKey="client"
@@ -512,7 +651,7 @@ export default function ChangeStatusPage({
                   return (
                     <Fragment key={p.id}>
                       <tr>
-                        <td>
+                        <td style={{ textAlign: 'left' }}>
                           {hasExtraVariants(p.variants) ? (
                             <button
                               type="button"
@@ -567,6 +706,14 @@ export default function ChangeStatusPage({
                                 display: 'flex',
                                 alignItems: 'baseline',
                                 gap: 6,
+                                // Matches the <button> branch above.
+                                // Without it these rows inherit the
+                                // table's centring while expandable
+                                // rows don't, so the same column
+                                // renders two different alignments
+                                // depending on whether a job
+                                // happens to have colourways.
+                                textAlign: 'left',
                               }}
                             >
                               <span
@@ -592,6 +739,9 @@ export default function ChangeStatusPage({
                               </span>
                             </div>
                           )}
+                        </td>
+                        <td>
+                          <ReferenceThumb project={p} />
                         </td>
                         <td>{p.client.name}</td>
                         <td>
@@ -628,7 +778,7 @@ export default function ChangeStatusPage({
                                 background: 'var(--surface-2, transparent)',
                               }}
                             >
-                              <td style={{ paddingLeft: 28 }}>
+                              <td style={{ paddingLeft: 28, textAlign: 'left' }}>
                                 <span
                                   aria-hidden
                                   style={{
@@ -642,6 +792,12 @@ export default function ChangeStatusPage({
                                   {v.name}
                                 </strong>
                               </td>
+                              {/* References belong to the product,
+                                  not the colourway, so the parent
+                                  row is the only one that shows
+                                  them. Empty cell keeps the columns
+                                  aligned. */}
+                              <td />
                               <td />
                               <td />
                               <td style={{ color: 'var(--text-dim)' }}>
@@ -688,7 +844,17 @@ export default function ChangeStatusPage({
           >
             <div className="crm-modal-header">
               <div>
-                <h2 className="crm-modal-title">Reset this job?</h2>
+                {/* “Reset” is only true of YTA / YTS. Parking a job
+                    and putting it back are different actions and
+                    asking “reset?” for either would misdescribe
+                    what the confirm button does. */}
+                <h2 className="crm-modal-title">
+                  {confirming.to === 'hold'
+                    ? 'Put this job on hold?'
+                    : confirming.to === 'resume'
+                    ? 'Resume this job?'
+                    : 'Reset this job?'}
+                </h2>
                 <p
                   style={{
                     margin: '4px 0 0',
@@ -716,7 +882,9 @@ export default function ChangeStatusPage({
                 )}
               </strong>
               {' → '}
-              <strong>{targetLabel(confirming.to)}</strong>
+              <strong>
+                {optionLabel(confirming.target, confirming.to)}
+              </strong>
             </p>
             <p
               style={{
@@ -752,7 +920,55 @@ export default function ChangeStatusPage({
               </div>
             )}
 
-            {confirming.target.status === 'approved' && (
+            {/* A hold that can't say where it came from can't be
+                undone cleanly either — resuming it will land at
+                the start of the pipeline. Worth knowing before
+                committing, not after. */}
+            {confirming.to === 'resume' && !confirming.target.heldFrom && (
+              <div
+                style={{
+                  padding: 12,
+                  background: 'rgba(251, 191, 36, 0.12)',
+                  border: '1px solid rgba(217, 119, 6, 0.35)',
+                  borderRadius: 10,
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                }}
+              >
+                <strong style={{ color: '#92400e' }}>
+                  No record of where this job paused.
+                </strong>{' '}
+                It will come back at the start of the pipeline rather
+                than the stage it was in. Uploaded files and feedback
+                history are untouched.
+              </div>
+            )}
+
+            {confirming.to === 'hold' && (
+              <div
+                style={{
+                  padding: 12,
+                  background: 'rgba(139, 92, 246, 0.12)',
+                  border: '1px solid rgba(109, 40, 217, 0.35)',
+                  borderRadius: 10,
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                }}
+              >
+                <strong style={{ color: '#6d28d9' }}>
+                  This takes the job out of every queue.
+                </strong>{' '}
+                It leaves the artist&apos;s list, the review queues and
+                Open Jobs, and appears under Hold on the Overview. The
+                artist stays assigned, and Resume will put it back in
+                the stage it&apos;s in now.
+              </div>
+            )}
+
+            {confirming.target.status === 'approved' &&
+              confirming.to !== 'hold' && (
               <div
                 style={{
                   padding: 12,
@@ -795,7 +1011,11 @@ export default function ChangeStatusPage({
                   await persist(target, to);
                 }}
               >
-                Reset job
+                {confirming.to === 'hold'
+                  ? 'Put on hold'
+                  : confirming.to === 'resume'
+                  ? 'Resume job'
+                  : 'Reset job'}
               </button>
             </div>
           </div>

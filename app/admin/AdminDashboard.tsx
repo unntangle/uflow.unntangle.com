@@ -37,6 +37,7 @@ type Project = {
   //   client_review — admin approved; awaiting client EQA sign-off
   //   eqa_rejected  — client rejected; back to admin for triage
   //   approved      — client signed off; final
+  //   on_hold       — client paused it; out of every queue until resumed
   status:
     | 'draft'
     | 'qa_pending'
@@ -46,7 +47,8 @@ type Project = {
     | 'iqa_wip'
     | 'eqa_wip'
     | 'client_review'
-    | 'approved';
+    | 'approved'
+    | 'on_hold';
   revision_count: number;
   glb_url: string | null;
   approved_glb_url: string | null;
@@ -115,7 +117,9 @@ type Artist = { id: string; name: string; email: string };
 //   IQA Rejected — admin rejected; artist has feedback to revise
 //   EQA          — client_review: awaiting client sign-off
 //   EQA Rejected — client rejected; back to admin to triage
-//   Open Jobs    — rollup of everything in motion (not approved)
+//   Open Jobs    — rollup of everything in motion (not approved,
+//                  not held)
+//   Hold         — On Hold by Client: paused, out of every queue
 //   Approved     — signed off, final
 // ============================================================
 export default function AdminDashboard({
@@ -230,8 +234,25 @@ export default function AdminDashboard({
   const eqaRejected = visibleProjects.filter((p) =>
     anyVariantIn(p, ['eqa_rejected'])
   );
-  // Open Jobs = the rollup view: everything not fully signed off.
-  const openJobs = visibleProjects.filter((p) => !allVariantsApproved(p));
+  // Hold and Open Jobs are DISJOINT: any paused colourway puts
+  // the product under Hold and takes it out of Open Jobs
+  // entirely. Not "every colourway paused" — that let a product
+  // with one held colourway and one live one sit in Open Jobs
+  // wearing an "On Hold by Client" badge, which reads as a
+  // contradiction whatever the underlying data says.
+  //
+  // The trade-off is deliberate: a product with Black held and
+  // Grey in WIP disappears from Open Jobs even though Grey is
+  // live work. It's still in the WIP tab, which is where someone
+  // looking for work to do would find it, and Open Jobs stays
+  // readable as "jobs actually moving".
+  const hold = visibleProjects.filter((p) => anyVariantIn(p, ['on_hold']));
+  // Open Jobs = the rollup view: everything not fully signed off
+  // and not blocked. Both exclusions exist so the count means
+  // something — it should be work someone can act on today.
+  const openJobs = visibleProjects.filter(
+    (p) => !allVariantsApproved(p) && !anyVariantIn(p, ['on_hold'])
+  );
   const history = visibleProjects.filter((p) => allVariantsApproved(p));
 
   // Mode plumbing.
@@ -256,6 +277,7 @@ export default function AdminDashboard({
     | 'eqa'
     | 'eqa_rejected'
     | 'open'
+    | 'hold'
     | 'history';
 
   // Map a URL ?tab=... value (including legacy aliases) onto the
@@ -270,6 +292,7 @@ export default function AdminDashboard({
     if (raw === 'yts') return 'yts';
     if (raw === 'wip') return 'wip';
     if (raw === 'open') return 'open';
+    if (raw === 'hold' || raw === 'on_hold') return 'hold';
     if (raw === 'history') return 'history';
     return null;
   }
@@ -287,6 +310,11 @@ export default function AdminDashboard({
     'eqa',
     'eqa_rejected',
     'open',
+    // Sits directly after Open Jobs: the two answer the same
+    // question from opposite sides (what's live vs. what's
+    // blocked), and Open Jobs' count only makes sense once you
+    // can see what was subtracted from it.
+    'hold',
     'history',
   ];
   const allowedTabs = isQaMode ? qaTabs : overviewTabs;
@@ -368,6 +396,7 @@ export default function AdminDashboard({
       case 'eqa':           return eqa;
       case 'eqa_rejected':  return eqaRejected;
       case 'open':          return openJobs;
+      case 'hold':          return hold;
       case 'history':       return history;
     }
   })();
@@ -485,6 +514,26 @@ export default function AdminDashboard({
       // wherever a GLB actually exists.
       showAsset: true,
       showRevision: false,
+      actionKind: 'none',
+    },
+    hold: {
+      label: 'Hold',
+      count: hold.length,
+      emptyMsg: 'Nothing on hold. No client has paused a job.',
+      // Held jobs can be at any stage, so some have a delivered
+      // model and some don't. The cell-level guard keeps the
+      // column empty on the ones that don't — same arrangement
+      // Open Jobs uses.
+      showAsset: true,
+      // Revision is on: a job parked mid-revision is exactly the
+      // one where an admin wants the feedback link to hand when
+      // the client asks what state it was left in.
+      showRevision: true,
+      queueStatuses: ['on_hold'],
+      // No action. A hold is released from the Change Status page,
+      // not from here — resuming has to name the stage the job
+      // goes back to, and that's a confirmation dialog, not a
+      // one-click link in a table cell.
       actionKind: 'none',
     },
     history: {
@@ -801,6 +850,10 @@ function adminStatusLabel(p: Project): string {
   if (status === 'draft') {
     return p.assigned_to ? 'YTS' : 'YTA';
   }
+  // Matches the badge wording exactly, same rule as the rest of
+  // this function — a CSV that said just "Hold" would not be
+  // searchable against what the dashboard shows.
+  if (status === 'on_hold') return 'On Hold by Client';
   if (status === 'qa_pending') return 'IQA';
   // Rejection labels match the on-screen StatusBadge (label only,
   // no count). The Revision column carries the round number

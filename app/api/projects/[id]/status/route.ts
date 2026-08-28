@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../../../lib/auth';
-import { supabase } from '../../../../lib/supabase';
+import { supabase, ProjectStatus } from '../../../../lib/supabase';
 import { isProjectStatus } from '../../../../lib/status-options';
 import { refreshManifest } from '../../../../lib/publish';
 
@@ -15,10 +15,13 @@ export const runtime = 'nodejs';
 //
 // Body (JSON):
 //   {
-//     status: ProjectStatus,
+//     status?: ProjectStatus,
+//     resume?: boolean,
 //     variant_id?: string | null,
 //     clear_assignment?: boolean
 //   }
+//
+// Exactly one of `status` or `resume: true` is required.
 //
 // Why clear_assignment exists
 // ---------------------------
@@ -35,6 +38,30 @@ export const runtime = 'nodejs';
 // variant_id targets a colourway. Per-variant assigned_to is
 // left alone; finalize-upload already treats the project's
 // assignee as the fallback owner.
+//
+// Why `resume` exists
+// -------------------
+// 'on_hold' ("On Hold by Client") is a parking state, not a
+// pipeline stage — see migrations/2026-08-28. Coming off a hold
+// means going back to whatever the row was doing when it was
+// paused, and only the server knows that: it's stashed in
+// hold_prev_status when the hold is applied.
+//
+// The caller therefore can't send a status for this move without
+// guessing, so it sends `resume: true` and this route resolves
+// the destination. The inverse bookkeeping lives here too:
+//
+//   → on_hold      record the current status as hold_prev_status
+//                  (an already-held row keeps its ORIGINAL origin,
+//                  so re-holding can't overwrite it with 'on_hold')
+//   → resume       write hold_prev_status back, then clear it
+//   → anything else  clear hold_prev_status; it no longer
+//                  describes where the row is
+//
+// A resume with no recorded origin (a hold applied before the
+// column existed) falls back to 'draft' and says so in
+// `warnings` rather than failing — refusing would strand the job
+// in a state with no way out.
 //
 // Why this is a separate endpoint from PATCH /api/projects/:id
 // -----------------------------------------------------------
@@ -60,7 +87,8 @@ export const runtime = 'nodejs';
 //
 // WHAT THIS DOES NOT DO
 // ---------------------
-// Only `status` and `updated_at` change. Deliberately untouched:
+// Only `status`, `hold_prev_status` and `updated_at` change.
+// Deliberately untouched:
 //
 //   - revision_count   owned by the rejection path (POST /feedback)
 //   - assigned_to      owned by /assign
@@ -74,13 +102,27 @@ export const runtime = 'nodejs';
 // nothing published. Use the QA Review approve flow for a real
 // sign-off; use this to correct a status that's simply wrong.
 //
+// Resuming BACK INTO 'approved' is the exception: that row was
+// genuinely approved before it was held, so its published page
+// and approved_glb_url are still intact and no warning is due.
+//
 // Moving a product row OUT of 'approved' DOES refresh the public
 // manifest, because writeManifest() selects on
 // uflow_projects.status = 'approved' — leaving it stale would
 // keep an unapproved model listed in every public viewer's
-// sidebar. Both of these come back as `warnings` so the UI can
-// surface them instead of silently succeeding.
+// sidebar. Putting an approved job on hold counts as leaving it,
+// for the same reason: a paused job shouldn't stay listed. Both
+// of these come back as `warnings` so the UI can surface them
+// instead of silently succeeding.
 // ============================================================
+
+// The DB columns are plain text, so anything read back out gets
+// re-checked against the union rather than trusted. A value that
+// doesn't match (hand-edited row, older enum) reads as "no
+// recorded origin", which the resume path already handles.
+function asStatus(v: unknown): ProjectStatus | null {
+  return isProjectStatus(v) ? v : null;
+}
 
 export async function PATCH(
   req: NextRequest,
@@ -93,6 +135,7 @@ export async function PATCH(
 
   let body: {
     status?: unknown;
+    resume?: unknown;
     variant_id?: unknown;
     clear_assignment?: unknown;
   };
@@ -102,8 +145,12 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const status = body.status;
-  if (!isProjectStatus(status)) {
+  const resume = body.resume === true;
+  const requestedStatus = asStatus(body.status);
+
+  // `resume` supplies its own destination, so a status is only
+  // required when it's absent.
+  if (!resume && !requestedStatus) {
     return NextResponse.json(
       { error: 'Invalid status value.' },
       { status: 400 }
@@ -122,7 +169,7 @@ export async function PATCH(
   // stray id from another job can't be written through this URL.
   const { data: project, error: pErr } = await supabase()
     .from('uflow_projects')
-    .select('id, name, slug, status, assigned_to')
+    .select('id, name, slug, status, assigned_to, hold_prev_status')
     .eq('id', id)
     .maybeSingle();
 
@@ -135,6 +182,63 @@ export async function PATCH(
   }
 
   const warnings: string[] = [];
+
+  // ============================================================
+  // resolveMove
+  // ============================================================
+  // The one place that decides what actually gets written, shared
+  // by the variant and product paths so the hold bookkeeping
+  // can't diverge between them. Takes the row's current state and
+  // returns the pair of values to persist.
+  //
+  // Returns an error instead of throwing so callers can map it to
+  // a 409 — "resume a job that isn't on hold" is a client mistake,
+  // not a server fault.
+  // ============================================================
+  type Move =
+    | { ok: true; status: ProjectStatus; holdPrev: ProjectStatus | null }
+    | { ok: false; error: string };
+
+  function resolveMove(
+    current: ProjectStatus,
+    heldFrom: ProjectStatus | null
+  ): Move {
+    if (resume) {
+      if (current !== 'on_hold') {
+        return {
+          ok: false,
+          error: 'This job is not on hold, so there is nothing to resume.',
+        };
+      }
+      if (!heldFrom) {
+        warnings.push(
+          'There was no record of where this job paused, so it has been resumed at the start of the pipeline.'
+        );
+        return { ok: true, status: 'draft', holdPrev: null };
+      }
+      return { ok: true, status: heldFrom, holdPrev: null };
+    }
+
+    // Non-null: guarded at the top of the handler.
+    const next = requestedStatus!;
+
+    if (next === 'on_hold') {
+      // Holding a row that's ALREADY held keeps the first origin.
+      // Recording 'on_hold' as its own origin would make the
+      // resume path a no-op loop, and the CHECK constraint
+      // rejects it anyway.
+      return {
+        ok: true,
+        status: 'on_hold',
+        holdPrev: current === 'on_hold' ? heldFrom : current,
+      };
+    }
+
+    // Any other explicit move (YTA / YTS) discards the origin —
+    // once the row is somewhere real, where it used to be paused
+    // describes nothing.
+    return { ok: true, status: next, holdPrev: null };
+  }
 
   // ----- Assignment -----
   // Done before the status write and shared by both paths below,
@@ -162,7 +266,7 @@ export async function PATCH(
   if (variantId) {
     const { data: variant, error: vErr } = await supabase()
       .from('uflow_project_variants')
-      .select('id, project_id, name, status')
+      .select('id, project_id, name, status, hold_prev_status')
       .eq('id', variantId)
       .maybeSingle();
 
@@ -176,10 +280,20 @@ export async function PATCH(
       return NextResponse.json({ error: 'Not found.' }, { status: 404 });
     }
 
-    // A change of assignment alone is a real change, so the
-    // early-out only applies when neither would move.
+    const currentStatus = variant.status as ProjectStatus;
+    const currentHeldFrom = asStatus(variant.hold_prev_status);
+
+    const move = resolveMove(currentStatus, currentHeldFrom);
+    if (!move.ok) {
+      return NextResponse.json({ error: move.error }, { status: 409 });
+    }
+
+    // A change of assignment alone is a real change, and so is a
+    // change to the recorded hold origin, so the early-out only
+    // applies when none of the three would move.
     if (
-      variant.status === status &&
+      currentStatus === move.status &&
+      currentHeldFrom === move.holdPrev &&
       (!clearAssignment || project.assigned_to === null)
     ) {
       return NextResponse.json({
@@ -187,8 +301,8 @@ export async function PATCH(
         unchanged: true,
         target: 'variant',
         variant_id: variantId,
-        from: variant.status,
-        to: status,
+        from: currentStatus,
+        to: move.status,
         warnings,
       });
     }
@@ -202,7 +316,11 @@ export async function PATCH(
 
     const { error: uErr } = await supabase()
       .from('uflow_project_variants')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update({
+        status: move.status,
+        hold_prev_status: move.holdPrev,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', variantId)
       // Belt-and-braces: scope the write itself to the product as
       // well as the id, so a mismatched pair can never land.
@@ -213,9 +331,16 @@ export async function PATCH(
       return NextResponse.json({ error: 'DB error' }, { status: 500 });
     }
 
-    if (status === 'approved') {
+    // Only for a fresh approval by decree. A resume back into
+    // 'approved' is restoring a sign-off that already published.
+    if (move.status === 'approved' && !resume) {
       warnings.push(
         'Marked approved without publishing — no public viewer page was written for this colourway.'
+      );
+    }
+    if (move.status === 'on_hold') {
+      warnings.push(
+        'Parked. This colourway has left every queue and will not appear in anyone’s work list until it is resumed.'
       );
     }
 
@@ -223,8 +348,9 @@ export async function PATCH(
       ok: true,
       target: 'variant',
       variant_id: variantId,
-      from: variant.status,
-      to: status,
+      from: currentStatus,
+      to: move.status,
+      held_from: move.holdPrev,
       unassigned: clearAssignment,
       warnings,
     });
@@ -233,22 +359,33 @@ export async function PATCH(
   // ============================================================
   // Product path
   // ============================================================
+  const currentStatus = project.status as ProjectStatus;
+  const currentHeldFrom = asStatus(project.hold_prev_status);
+
+  const move = resolveMove(currentStatus, currentHeldFrom);
+  if (!move.ok) {
+    return NextResponse.json({ error: move.error }, { status: 409 });
+  }
+
   if (
-    project.status === status &&
+    currentStatus === move.status &&
+    currentHeldFrom === move.holdPrev &&
     (!clearAssignment || project.assigned_to === null)
   ) {
     return NextResponse.json({
       ok: true,
       unchanged: true,
       target: 'project',
-      from: project.status,
-      to: status,
+      from: currentStatus,
+      to: move.status,
       warnings,
     });
   }
 
+  // Includes going on hold: an approved job that's been parked
+  // shouldn't stay listed in the public manifest either.
   const leavingApproved =
-    project.status === 'approved' && status !== 'approved';
+    currentStatus === 'approved' && move.status !== 'approved';
 
   if (!(await applyAssignmentClear())) {
     return NextResponse.json(
@@ -259,7 +396,11 @@ export async function PATCH(
 
   const { error: uErr } = await supabase()
     .from('uflow_projects')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({
+      status: move.status,
+      hold_prev_status: move.holdPrev,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', id);
 
   if (uErr) {
@@ -273,7 +414,7 @@ export async function PATCH(
   // on the public viewer's sidebar that the next publish
   // corrects. Failing the request here would leave the caller
   // thinking nothing happened when the DB has already moved.
-  if (leavingApproved || status === 'approved') {
+  if (leavingApproved || move.status === 'approved') {
     try {
       await refreshManifest();
     } catch (err) {
@@ -289,17 +430,23 @@ export async function PATCH(
       'The published viewer page is still live in storage — only the manifest listing was updated.'
     );
   }
-  if (status === 'approved') {
+  if (move.status === 'approved' && !resume) {
     warnings.push(
       'Marked approved without publishing — no public viewer page was written. Use QA Review to publish properly.'
+    );
+  }
+  if (move.status === 'on_hold') {
+    warnings.push(
+      'Parked. This job has left every queue and will not appear in anyone’s work list until it is resumed.'
     );
   }
 
   return NextResponse.json({
     ok: true,
     target: 'project',
-    from: project.status,
-    to: status,
+    from: currentStatus,
+    to: move.status,
+    held_from: move.holdPrev,
     unassigned: clearAssignment,
     warnings,
   });

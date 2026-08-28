@@ -81,7 +81,20 @@ export type ProjectStatus =
   // officemate.unntangle.com/<slug> does NOT show models in this
   // state — only 'approved' is published.
   | 'client_review'
-  | 'approved';
+  | 'approved'
+  // On Hold by Client. A PARKING state, not a pipeline stage:
+  // nothing reaches it by doing work, only an admin sets it from
+  // the Change Status page when the client pauses the job.
+  //
+  // It removes the job from every stage queue — the artist's
+  // list, IQA, EQA, Open Jobs — because none of those should be
+  // counting work nobody is allowed to touch. It surfaces
+  // instead in the Overview's Hold tab.
+  //
+  // Where the job came from is stashed in hold_prev_status so
+  // resuming can put it back where it paused rather than at the
+  // start of the pipeline. See migrations/2026-08-28.
+  | 'on_hold';
 
 // ============================================================
 // Client-rejection feedback (separate table from artist feedback)
@@ -119,6 +132,12 @@ export type CrmProject = {
   // CHECK constraints in that migration.
   complexity: JobComplexity | null;
   category: JobCategory | null;
+  // Where this row was when it went On Hold by Client, so
+  // resuming can restore it. Null whenever status !== 'on_hold'
+  // (and on rows held before the column existed, where the
+  // resume path falls back to 'draft'). Never itself 'on_hold' —
+  // enforced by a CHECK constraint.
+  hold_prev_status: ProjectStatus | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
