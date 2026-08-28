@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../components/Sidebar';
 import { crmFetch, crmPath } from '../../lib/client-fetch';
+import { toWebpAll } from '../../lib/image-to-webp';
 
 // ============================================================
 // Types
@@ -45,9 +46,9 @@ export default function CreateClientJobForm({
   const [brief, setBrief] = useState('');
   const [refs, setRefs] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
-  const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'creating'>(
-    'idle'
-  );
+  const [stage, setStage] = useState<
+    'idle' | 'optimizing' | 'uploading-refs' | 'creating'
+  >('idle');
   const [err, setErr] = useState<string | null>(null);
 
   function addRefs(picked: FileList | File[]) {
@@ -74,6 +75,16 @@ export default function CreateClientJobForm({
       // ---- 1. Upload reference images (if any) ----
       let referenceUrls: string[] = [];
       if (refs.length > 0) {
+        // Re-encode to WebP before signing. Matters most on this
+        // form: clients upload straight from a phone or a
+        // supplier's site, so these are the largest originals in
+        // the system, and the ones every artist and reviewer
+        // downloads afterwards. `files` feeds BOTH the
+        // content_types below and the PUT bodies, which must
+        // agree or R2 rejects the signature.
+        setStage('optimizing');
+        const files = await toWebpAll(refs);
+
         setStage('uploading-refs');
         const signRes = await crmFetch('/api/references-sign', {
           method: 'POST',
@@ -84,8 +95,8 @@ export default function CreateClientJobForm({
             // for their own brand.
             client_slug: brand.slug,
             project_slug: slug,
-            count: refs.length,
-            content_types: refs.map(
+            count: files.length,
+            content_types: files.map(
               (f) => f.type || 'application/octet-stream'
             ),
           }),
@@ -97,7 +108,7 @@ export default function CreateClientJobForm({
         }
 
         referenceUrls = await Promise.all(
-          refs.map(async (f, i) => {
+          files.map(async (f, i) => {
             const item = signData.signed[i];
             const r = await fetch(item.upload_url, {
               method: 'PUT',
@@ -144,7 +155,9 @@ export default function CreateClientJobForm({
   }
 
   const stageLabel =
-    stage === 'uploading-refs'
+    stage === 'optimizing'
+      ? 'Optimising images…'
+      : stage === 'uploading-refs'
       ? 'Uploading references…'
       : stage === 'creating'
       ? 'Creating job…'

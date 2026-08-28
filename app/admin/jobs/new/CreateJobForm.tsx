@@ -9,12 +9,25 @@ import {
   CATEGORY_OPTIONS,
   UNSET,
 } from '../../../lib/job-options';
+import { toWebpAll } from '../../../lib/image-to-webp';
 
 // ============================================================
 // Types
 // ============================================================
 type Client = { slug: string; name: string };
 type Artist = { id: string; name: string; email: string };
+// An existing job that a new CHILD can be hung off. Only jobs
+// that are themselves parents are eligible — the hierarchy is
+// one level deep.
+type ParentOption = {
+  id: string;
+  name: string;
+  slug: string;
+  client_slug: string;
+  client_name: string;
+};
+
+type ModelType = 'parent' | 'child';
 
 // ============================================================
 // CreateJobForm — page version of the old CreateJobModal.
@@ -31,10 +44,12 @@ type Artist = { id: string; name: string; email: string };
 export default function CreateJobForm({
   clients,
   artists,
+  parentOptions,
   currentUser,
 }: {
   clients: Client[];
   artists: Artist[];
+  parentOptions: ParentOption[];
   currentUser: { name: string; role: 'admin' };
 }) {
   const router = useRouter();
@@ -61,18 +76,32 @@ export default function CreateJobForm({
   // translated to null in the payload; the column is nullable.
   const [complexity, setComplexity] = useState<string>(UNSET);
   const [category, setCategory] = useState<string>(UNSET);
-  // Colourway names to create alongside the product, e.g.
-  // ['Grey', 'Navy']. The product always gets an 'Original'
-  // primary variant server-side, so this list is the EXTRAS only
-  // — leaving it empty gives the same single-model job as before.
-  // Each one becomes its own QA cycle needing its own zip, but
-  // they all share this job's reference images.
-  const [variants, setVariants] = useState<string[]>([]);
-  const [variantDraft, setVariantDraft] = useState('');
+  // Where this job sits in the hierarchy.
+  //
+  // 'parent' is a standalone model — the default, and what every
+  // job created before this feature is.
+  // 'child' is a model derived from an existing one; it names its
+  // parent below. A child is still a FULL job: its own slug, its
+  // own artist, its own zip, its own QA cycle. parent_id is a
+  // grouping link, not a shared pipeline.
+  const [modelType, setModelType] = useState<ModelType>('parent');
+  const [parentId, setParentId] = useState<string>('');
   const [refs, setRefs] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
-  const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'creating'>('idle');
+  const [stage, setStage] = useState<
+    'idle' | 'optimizing' | 'uploading-refs' | 'creating'
+  >('idle');
   const [err, setErr] = useState<string | null>(null);
+  // Last successfully created job. Kept on screen so the admin
+  // gets confirmation without leaving the form — creating jobs is
+  // usually a batch activity, and bouncing to the Overview after
+  // each one meant navigating back every time.
+  const [created, setCreated] = useState<{
+    id: string;
+    name: string;
+    slug: string;
+    warning?: string;
+  } | null>(null);
 
   function addRefs(picked: FileList | File[]) {
     const arr = Array.from(picked).filter((f) => /^image\//.test(f.type));
@@ -82,35 +111,38 @@ export default function CreateJobForm({
     setRefs((prev) => prev.filter((_, idx) => idx !== i));
   }
 
-  // Commit the typed variant name. Compares on the slugified form
-  // so "Light Grey" and "light grey" are caught as the same thing
-  // here rather than being silently dropped by the server's
-  // de-dupe.
-  function addVariant() {
-    const name = variantDraft.trim();
-    if (!name) return;
-    const key = (s: string) =>
-      s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    if (key(name) === 'original') {
-      setVariantDraft('');
-      return;
-    }
-    setVariants((prev) =>
-      prev.some((v) => key(v) === key(name)) ? prev : [...prev, name]
-    );
-    setVariantDraft('');
+  // Every job that isn't itself a child is a candidate, whatever
+  // client it belongs to — the page query already filtered out
+  // children, so there's nothing left to narrow here. Switching
+  // the Client dropdown deliberately does NOT change this list or
+  // clear a selection: lineage can cross brands.
+  function changeClient(next: string) {
+    setClientSlug(next);
   }
-  function removeVariantAt(i: number) {
-    setVariants((prev) => prev.filter((_, idx) => idx !== i));
+
+  // Flipping back to Parent drops any selection, so a job can
+  // never be submitted as a parent while still carrying a
+  // parent_id (the DB has a CHECK constraint for exactly that).
+  function changeModelType(next: ModelType) {
+    setModelType(next);
+    if (next === 'parent') setParentId('');
   }
 
   async function submit() {
     setErr(null);
+    setCreated(null);
     // assignedTo is allowed to be the ASSIGN_LATER sentinel —
     // unlike before, the admin doesn't have to pick an artist.
     // We only require the human-typed fields.
     if (!name.trim() || !slug.trim() || !clientSlug) {
       setErr('Fill in all required fields.');
+      return;
+    }
+    // A child with no parent is meaningless, and the DB would
+    // reject it anyway — catch it here so the admin gets a
+    // sentence instead of a 400.
+    if (modelType === 'child' && !parentId) {
+      setErr('Pick the parent model this child belongs to.');
       return;
     }
     // "No artists yet" is no longer a blocker now that an admin
@@ -123,6 +155,13 @@ export default function CreateJobForm({
       // ---- 1. Upload reference images (if any) directly to R2 ----
       let referenceUrls: string[] = [];
       if (refs.length > 0) {
+        // Re-encode to WebP first. `files` is used for BOTH the
+        // content_types sent to the sign endpoint and the PUT
+        // bodies below — those two must describe the same bytes,
+        // or R2 rejects the upload on a signature mismatch.
+        setStage('optimizing');
+        const files = await toWebpAll(refs);
+
         setStage('uploading-refs');
         const signRes = await crmFetch('/api/references-sign', {
           method: 'POST',
@@ -130,11 +169,11 @@ export default function CreateJobForm({
           body: JSON.stringify({
             client_slug: clientSlug,
             project_slug: slug,
-            count: refs.length,
+            count: files.length,
             // Tell the server each file's MIME so it can sign
             // matching Content-Types. The browser must then send
             // the same header on the PUT or R2 rejects the request.
-            content_types: refs.map(
+            content_types: files.map(
               (f) => f.type || 'application/octet-stream'
             ),
           }),
@@ -146,7 +185,7 @@ export default function CreateJobForm({
         }
 
         referenceUrls = await Promise.all(
-          refs.map(async (f, i) => {
+          files.map(async (f, i) => {
             const item = signData.signed[i];
             const r = await fetch(item.upload_url, {
               method: 'PUT',
@@ -184,10 +223,11 @@ export default function CreateJobForm({
           // of treating the field as missing.
           complexity: complexity || null,
           category: category || null,
-          // Extra colourways. The server always creates the
-          // 'Original' primary variant, so this carries only the
-          // additional ones.
-          variants,
+          // Hierarchy. parent_id is only ever sent for a child;
+          // a parent sends null explicitly so the server can't
+          // read a stale value from anywhere.
+          model_type: modelType,
+          parent_id: modelType === 'child' ? parentId : null,
           reference_image_urls: referenceUrls,
         }),
       });
@@ -196,9 +236,31 @@ export default function CreateJobForm({
         setErr(data.error || 'Failed to create job.');
         return;
       }
-      // Success — go back to the admin dashboard and refresh.
-      router.push(crmPath('/admin'));
+
+      // Stay put. Reset only the per-job fields — name, brief and
+      // references — and deliberately KEEP client, model type,
+      // parent, category, complexity and artist. Those are the
+      // fields that repeat when adding several related models in
+      // a row (e.g. four children under one parent), so clearing
+      // them would mean re-picking the same six values each time.
+      setCreated({
+        id: data.project?.id,
+        name: data.project?.name ?? name,
+        slug: data.project?.slug ?? slug,
+        warning: data.warning,
+      });
+      setName('');
+      setSlug('');
+      setBrief('');
+      setRefs([]);
+
+      // Re-runs the server component so the Parent model dropdown
+      // picks up the job just created — without this, a new
+      // parent wouldn't be selectable until a manual reload.
       router.refresh();
+
+      // Put the cursor back where the next job starts.
+      document.getElementById('job-name-input')?.focus();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -208,6 +270,7 @@ export default function CreateJobForm({
   }
 
   const stageLabel =
+    stage === 'optimizing' ? 'Optimising images…' :
     stage === 'uploading-refs' ? 'Uploading references…' :
     stage === 'creating' ? 'Creating job…' :
     'Create job';
@@ -239,12 +302,72 @@ export default function CreateJobForm({
           </header>
 
           <div className="crm-card">
+            {/* Confirmation for the job just created. Sits at the
+                top of the card so it's visible without scrolling
+                back up, and clears the moment another submit
+                starts so it can never describe a stale result. */}
+            {created && (
+              <div
+                style={{
+                  border: '1px solid var(--border)',
+                  borderLeft: '3px solid var(--success, #16a34a)',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  marginBottom: 16,
+                  fontSize: 13,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span>
+                  Created <strong>{created.name}</strong>{' '}
+                  <span style={{ color: 'var(--text-faint)' }}>
+                    ({created.slug})
+                  </span>
+                  . Ready for the next one.
+                </span>
+                <span style={{ flex: 1 }} />
+                <a
+                  className="crm-link"
+                  onClick={() => router.push(crmPath('/admin'))}
+                  style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  Go to Overview
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setCreated(null)}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    font: 'inherit',
+                    lineHeight: 1,
+                    padding: 0,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {created?.warning && (
+              <div className="crm-error" style={{ marginBottom: 16 }}>
+                {created.warning}
+              </div>
+            )}
+
             <div className="crm-form-group">
               <label className="crm-label">Client</label>
               <select
                 className="crm-input"
                 value={clientSlug}
-                onChange={(e) => setClientSlug(e.target.value)}
+                onChange={(e) => changeClient(e.target.value)}
+                disabled={busy}
               >
                 {clients.map((c) => (
                   <option key={c.slug} value={c.slug}>{c.name}</option>
@@ -252,9 +375,16 @@ export default function CreateJobForm({
               </select>
             </div>
 
+            {/*
+              Name comes before Model type: you decide WHAT the
+              model is before deciding where it sits in the
+              hierarchy, and the Parent dropdown that follows only
+              makes sense once the thing being parented has a name.
+            */}
             <div className="crm-form-group">
               <label className="crm-label">3D Model name</label>
               <input
+                id="job-name-input"
                 className="crm-input"
                 placeholder="e.g. Mars Desk"
                 value={name}
@@ -273,6 +403,65 @@ export default function CreateJobForm({
                 }}
               />
             </div>
+
+            <div className="crm-form-group">
+              <label className="crm-label">Model type</label>
+              <select
+                className="crm-input"
+                value={modelType}
+                onChange={(e) =>
+                  changeModelType(e.target.value as ModelType)
+                }
+                disabled={busy}
+              >
+                <option value="parent">Parent — a standalone model</option>
+                <option value="child">
+                  Child — derived from an existing model
+                </option>
+              </select>
+              <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '6px 0 0' }}>
+                A child is a full job in its own right — its own
+                brief, artist, upload and QA cycle. Choosing a parent
+                only records where it came from.
+              </p>
+            </div>
+
+            {/*
+              Only rendered on the Child branch. Keeping it out of
+              the DOM (rather than disabling it) means a parent job
+              can't leave a stale selection behind in the payload.
+            */}
+            {modelType === 'child' && (
+              <div className="crm-form-group">
+                <label className="crm-label">Parent model</label>
+                <select
+                  className="crm-input"
+                  value={parentId}
+                  onChange={(e) => setParentId(e.target.value)}
+                  disabled={busy || parentOptions.length === 0}
+                >
+                  <option value="">Select a parent model…</option>
+                  {parentOptions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {/* The client is only worth naming when it
+                          isn't the one already selected above —
+                          otherwise every row carries the same
+                          redundant suffix. */}
+                      {p.client_name && p.client_slug !== clientSlug
+                        ? `${p.name} — ${p.client_name}`
+                        : p.name}
+                    </option>
+                  ))}
+                </select>
+                {parentOptions.length === 0 && (
+                  <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: '6px 0 0' }}>
+                    No parent models found. Either there are no jobs
+                    yet, or the 2026-08-28 parent/child migration
+                    hasn&rsquo;t been run against the database.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="crm-form-group">
               <label className="crm-label">Category</label>
@@ -353,95 +542,6 @@ export default function CreateJobForm({
             </div>
 
             <div className="crm-form-group">
-              <label className="crm-label">Variants (optional)</label>
-              <p
-                style={{
-                  color: 'var(--text-dim)',
-                  fontSize: 12,
-                  margin: '0 0 8px',
-                }}
-              >
-                Colourways of the same product — add &ldquo;Grey&rdquo; and the
-                artist delivers a separate zip for it, reviewed and approved on
-                its own. Everything stays under one row on the dashboard and
-                shares the reference images below. Added colourways sit here as
-                chips until you create the job — click the × on one to drop it.
-              </p>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  className="crm-input"
-                  placeholder="e.g. Grey"
-                  value={variantDraft}
-                  onChange={(e) => setVariantDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Enter adds the chip rather than submitting the
-                    // whole form, which would create the job early.
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addVariant();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="crm-btn crm-btn-secondary"
-                  onClick={addVariant}
-                  disabled={!variantDraft.trim()}
-                  style={{ whiteSpace: 'nowrap' }}
-                >
-                  Add variant
-                </button>
-              </div>
-
-              {variants.length > 0 && (
-                <div
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 8,
-                    marginTop: 10,
-                  }}
-                >
-                  {variants.map((v, i) => (
-                    <span
-                      key={v}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        border: '1px dashed var(--border)',
-                        borderRadius: 999,
-                        padding: '4px 10px',
-                        fontSize: 13,
-                      }}
-                      title="Will be created when you press Create job"
-                    >
-                      <strong style={{ fontWeight: 600 }}>{v}</strong>
-                      <button
-                        type="button"
-                        onClick={() => removeVariantAt(i)}
-                        disabled={busy}
-                        aria-label={`Remove ${v}`}
-                        title="Remove"
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          cursor: busy ? 'not-allowed' : 'pointer',
-                          color: 'inherit',
-                          font: 'inherit',
-                          lineHeight: 1,
-                          padding: 0,
-                        }}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="crm-form-group">
               <label className="crm-label">Reference images (optional)</label>
               <div
                 className="crm-dropzone"
@@ -495,7 +595,13 @@ export default function CreateJobForm({
               <button
                 className="crm-btn"
                 onClick={submit}
-                disabled={busy || !name || !slug || !clientSlug}
+                disabled={
+                  busy ||
+                  !name ||
+                  !slug ||
+                  !clientSlug ||
+                  (modelType === 'child' && !parentId)
+                }
               >
                 {busy ? stageLabel : 'Create job'}
               </button>

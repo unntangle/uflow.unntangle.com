@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
+import TypeBadge, { ModelType } from '../../../components/TypeBadge';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 import { ProjectStatus } from '../../../lib/supabase';
 import {
@@ -25,6 +26,9 @@ type Project = {
   updated_at: string;
   client: { slug: string; name: string };
   assignee: { id: string; name: string; email: string } | null;
+  model_type?: ModelType | null;
+  parent_id?: string | null;
+  parent_name?: string | null;
 };
 type Artist = { id: string; name: string; email: string };
 
@@ -129,6 +133,9 @@ export default function ReassignJobsForm({
     client: (p) => p.client.name,
     status: (p) => statusRank(p.status),
     artist: (p) => p.assignee?.name ?? null,
+    // Parents first, then children — alphabetical happens to give
+    // the right grouping here, so no custom rank is needed.
+    type: (p) => p.model_type ?? 'parent',
   });
 
   return (
@@ -174,6 +181,7 @@ export default function ReassignJobsForm({
               <thead>
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} style={{ width: '28%' }} />
+                  <SortableTh label="Type" sortKey="type" sort={sort} onSort={onSort} />
                   <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
                   <SortableTh label="Current artist" sortKey="artist" sort={sort} onSort={onSort} />
@@ -193,6 +201,13 @@ export default function ReassignJobsForm({
                         <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
                           {p.slug}
                         </span>
+                      </td>
+                      <td>
+                        <TypeBadge
+                          modelType={p.model_type}
+                          parentId={p.parent_id}
+                          parentName={p.parent_name}
+                        />
                       </td>
                       <td>{p.client.name}</td>
                       <td>

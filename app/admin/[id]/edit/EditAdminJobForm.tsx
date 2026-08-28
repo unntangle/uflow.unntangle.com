@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
@@ -11,6 +11,7 @@ import {
   CATEGORY_OPTIONS,
   UNSET,
 } from '../../../lib/job-options';
+import { toWebpAll } from '../../../lib/image-to-webp';
 
 // ============================================================
 // Types
@@ -31,19 +32,6 @@ type ProjectLite = {
 // user can mark it for removal (toggling its id into
 // removedRefIds) but can't change its URL.
 type ExistingRef = { id: string; image_url: string };
-
-// A colourway of this product, as returned by
-// GET /api/projects/:id/variants. Each runs its own QA cycle, so
-// it carries its own status and revision count.
-type Variant = {
-  id: string;
-  name: string;
-  slug: string;
-  status: ProjectStatus;
-  revision_count: number;
-  is_primary: boolean;
-  position: number;
-};
 
 // ============================================================
 // EditAdminJobForm
@@ -104,90 +92,15 @@ export default function EditAdminJobForm({
 
   const [busy, setBusy] = useState(false);
 
-  // ---- Variants ----
-  // Staged like the reference images: Add queues a colourway
-  // locally, Save changes commits it. Keeps one mental model for
-  // the whole form — nothing on this page persists until Save,
-  // and Cancel discards everything.
-  const [variants, setVariants] = useState<Variant[] | null>(null);
-  const [variantDraft, setVariantDraft] = useState('');
-  const [pendingVariants, setPendingVariants] = useState<string[]>([]);
-  // Saved colourways marked for deletion this session. Staged
-  // rather than deleted on click, like the reference images — so
-  // an accidental click is undoable right up until Save, and
-  // Cancel throws the whole thing away.
-  const [removedVariantIds, setRemovedVariantIds] = useState<Set<string>>(
-    new Set()
-  );
-  const [variantErr, setVariantErr] = useState<string | null>(null);
+  // ---- Colourway variants: removed 2026-08-29 ----
+  // A model derived from another one is now its own job with
+  // model_type='child' and a parent_id, created from Create Job
+  // and re-pointed from Jobs → Change Type. There is nothing
+  // sub-row-shaped left for this form to edit.
 
-  function toggleVariantRemoval(id: string) {
-    setVariantErr(null);
-    setRemovedVariantIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    crmFetch(`/api/projects/${project.id}/variants`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled) setVariants(d.variants ?? []);
-      })
-      .catch(() => {
-        // Most likely the variants migration hasn't been run yet.
-        // An empty list degrades to "no variants" rather than
-        // breaking the whole edit form.
-        if (!cancelled) setVariants([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id]);
-
-  // Slugified comparison, matching what the server derives, so a
-  // clash is caught here rather than coming back as a 409 after
-  // the user has already pressed Save.
-  const variantKey = (s: string) =>
-    s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-  function stageVariant() {
-    const variantName = variantDraft.trim();
-    if (!variantName) return;
-    const key = variantKey(variantName);
-    if (!key) {
-      setVariantErr('That name has no usable letters or numbers.');
-      return;
-    }
-    const clashesSaved = (variants ?? []).some(
-      // A colourway marked for deletion doesn't block the name:
-      // removals are committed before creations on save, so
-      // re-adding "Grey" in the same session works.
-      (v) => v.slug === key && !removedVariantIds.has(v.id)
-    );
-    const clashesPending = pendingVariants.some(
-      (p) => variantKey(p) === key
-    );
-    if (clashesSaved || clashesPending) {
-      setVariantErr(`This product already has a "${key}" variant.`);
-      return;
-    }
-    setVariantErr(null);
-    setPendingVariants((prev) => [...prev, variantName]);
-    setVariantDraft('');
-  }
-
-  function removePendingVariantAt(i: number) {
-    setPendingVariants((prev) => prev.filter((_, idx) => idx !== i));
-  }
-
-  const [stage, setStage] = useState<'idle' | 'uploading-refs' | 'saving'>(
-    'idle'
-  );
+  const [stage, setStage] = useState<
+    'idle' | 'optimizing' | 'uploading-refs' | 'saving'
+  >('idle');
   const [err, setErr] = useState<string | null>(null);
 
   function addNewRefs(picked: FileList | File[]) {
@@ -212,8 +125,6 @@ export default function EditAdminJobForm({
   const briefChanged = (brief.trim() || null) !== (project.brief ?? null);
   const nameChanged = name.trim() !== project.name;
   const refsChanged = newRefs.length > 0 || removedRefIds.size > 0;
-  const variantsChanged =
-    pendingVariants.length > 0 || removedVariantIds.size > 0;
   // Compare through the same empty -> null normalisation the
   // PATCH applies, so re-picking the placeholder on an already-
   // unclassified job doesn't count as a change.
@@ -224,7 +135,6 @@ export default function EditAdminJobForm({
     nameChanged ||
     briefChanged ||
     refsChanged ||
-    variantsChanged ||
     complexityChanged ||
     categoryChanged;
 
@@ -245,6 +155,12 @@ export default function EditAdminJobForm({
       // admin for any brand.
       let addUrls: string[] = [];
       if (newRefs.length > 0) {
+        // Re-encoded before signing so the content_types below
+        // describe the same bytes the PUT sends — R2 checks the
+        // signed Content-Type against the request header.
+        setStage('optimizing');
+        const files = await toWebpAll(newRefs);
+
         setStage('uploading-refs');
         const signRes = await crmFetch('/api/references-sign', {
           method: 'POST',
@@ -252,8 +168,8 @@ export default function EditAdminJobForm({
           body: JSON.stringify({
             client_slug: brandSlug,
             project_slug: project.slug,
-            count: newRefs.length,
-            content_types: newRefs.map(
+            count: files.length,
+            content_types: files.map(
               (f) => f.type || 'application/octet-stream'
             ),
           }),
@@ -265,7 +181,7 @@ export default function EditAdminJobForm({
         }
 
         addUrls = await Promise.all(
-          newRefs.map(async (f, i) => {
+          files.map(async (f, i) => {
             const item = signData.signed[i];
             const r = await fetch(item.upload_url, {
               method: 'PUT',
@@ -313,62 +229,6 @@ export default function EditAdminJobForm({
         return;
       }
 
-      // ---- 3. Delete any colourways marked for removal ----
-      // Before the creations below, so freeing up a slug and
-      // re-adding the same name in one session works. Sequential
-      // for the same reason the creates are: each one re-reads
-      // the product's variant rows server-side.
-      for (const removedId of removedVariantIds) {
-        const label =
-          (variants ?? []).find((v) => v.id === removedId)?.name ??
-          'that variant';
-        const dRes = await crmFetch(
-          `/api/projects/${project.id}/variants/${removedId}`,
-          { method: 'DELETE' }
-        );
-        if (!dRes.ok) {
-          const dData = await dRes.json().catch(() => ({}));
-          // The field edits above already saved, so report
-          // precisely what didn't land rather than implying the
-          // whole save failed.
-          setErr(
-            `Saved the job, but "${label}" could not be removed: ${
-              dData.error || 'unknown error'
-            }`
-          );
-          return;
-        }
-      }
-
-      // ---- 4. Create any staged variants ----
-      // Sequential rather than parallel: each POST reads the
-      // product's existing variants to work out the next position
-      // and inherit the artist, so firing them at once would race
-      // and hand several variants the same position.
-      for (const variantName of pendingVariants) {
-        const vRes = await crmFetch(
-          `/api/projects/${project.id}/variants`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: variantName }),
-          }
-        );
-        if (!vRes.ok) {
-          const vData = await vRes.json().catch(() => ({}));
-          // The name/brief/reference edits are already saved at
-          // this point, so don't pretend the whole save failed —
-          // report exactly which variant didn't land and leave
-          // the user on the page to retry.
-          setErr(
-            `Saved the job, but "${variantName}" could not be added: ${
-              vData.error || 'unknown error'
-            }`
-          );
-          return;
-        }
-      }
-
       router.push(crmPath('/admin/jobs/list'));
       router.refresh();
     } catch (e) {
@@ -380,7 +240,9 @@ export default function EditAdminJobForm({
   }
 
   const stageLabel =
-    stage === 'uploading-refs'
+    stage === 'optimizing'
+      ? 'Optimising images…'
+      : stage === 'uploading-refs'
       ? 'Uploading references…'
       : stage === 'saving'
       ? 'Saving changes…'
@@ -616,220 +478,6 @@ export default function EditAdminJobForm({
             </div>
 
             {err && <div className="crm-error">{err}</div>}
-
-            {/* ---- Variants ----
-                Staged locally on Add and committed by Save
-                changes, so the whole form has one save model. */}
-            <div className="crm-form-group" style={{ marginTop: 24 }}>
-              <label className="crm-label">Variants</label>
-              <p
-                style={{
-                  color: 'var(--text-dim)',
-                  fontSize: 12,
-                  margin: '0 0 8px',
-                }}
-              >
-                Colourways of this product. Each needs its own zip from the
-                artist and is approved on its own, but they all stay under this
-                one job and share the reference images above. New variants are
-                created when you press Save changes. The original can&apos;t be
-                removed on its own — it is the product, so deleting it means
-                deleting the whole job from List Jobs.
-              </p>
-
-              {variants === null ? (
-                <p
-                  style={{
-                    color: 'var(--text-dim)',
-                    fontSize: 13,
-                    margin: 0,
-                  }}
-                >
-                  Loading…
-                </p>
-              ) : (
-                <>
-                  {(variants.length > 0 || pendingVariants.length > 0) && (
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}
-                    >
-                      {variants.map((v) => {
-                        const marked = removedVariantIds.has(v.id);
-                        return (
-                        <span
-                          key={v.id}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            border: marked
-                              ? '2px dashed var(--danger)'
-                              : '1px solid var(--border)',
-                            borderRadius: 999,
-                            padding: '4px 10px',
-                            fontSize: 13,
-                            opacity: marked ? 0.45 : 1,
-                            transition: 'opacity 0.15s',
-                          }}
-                          title={
-                            marked
-                              ? 'Marked for removal — click ↩ to undo'
-                              : v.is_primary
-                              ? 'The original colourway'
-                              : `Variant · ${v.slug}`
-                          }
-                        >
-                          <strong style={{ fontWeight: 600 }}>
-                            {v.is_primary ? project.name : v.name}
-                          </strong>
-                          <StatusBadge
-                            status={v.status}
-                            revisionCount={v.revision_count}
-                            assigned
-                          />
-                          {/* The primary IS the product — removing
-                              it would leave a job with no model at
-                              all, so that's the job Delete button on
-                              List Jobs, not this one. The API
-                              rejects it independently. */}
-                          {!v.is_primary && (
-                            <button
-                              type="button"
-                              onClick={() => toggleVariantRemoval(v.id)}
-                              disabled={busy}
-                              aria-label={
-                                marked
-                                  ? `Undo removing ${v.name}`
-                                  : `Remove ${v.name}`
-                              }
-                              title={
-                                marked
-                                  ? 'Undo'
-                                  : 'Remove this colourway on save'
-                              }
-                              style={{
-                                background: 'none',
-                                border: 'none',
-                                cursor: busy ? 'not-allowed' : 'pointer',
-                                color: 'inherit',
-                                font: 'inherit',
-                                lineHeight: 1,
-                                padding: 0,
-                              }}
-                            >
-                              {marked ? '↩' : '×'}
-                            </button>
-                          )}
-                        </span>
-                        );
-                      })}
-
-                      {/* Staged, not yet created. Dashed outline
-                          mirrors the reference images' "marked for
-                          removal" treatment so pending state reads
-                          consistently across the form. */}
-                      {pendingVariants.map((p, i) => (
-                        <span
-                          key={`pending-${p}`}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            border: '1px dashed var(--border)',
-                            borderRadius: 999,
-                            padding: '4px 10px',
-                            fontSize: 13,
-                            opacity: 0.8,
-                          }}
-                          title="Will be created when you press Save changes"
-                        >
-                          <strong style={{ fontWeight: 600 }}>{p}</strong>
-                          <span
-                            style={{
-                              color: 'var(--text-faint)',
-                              fontSize: 11,
-                            }}
-                          >
-                            after save
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removePendingVariantAt(i)}
-                            disabled={busy}
-                            aria-label={`Remove ${p}`}
-                            title="Remove"
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: 'inherit',
-                              font: 'inherit',
-                              lineHeight: 1,
-                              padding: 0,
-                            }}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {removedVariantIds.size > 0 && (
-                    <p
-                      style={{
-                        color: 'var(--danger, #dc2626)',
-                        fontSize: 12,
-                        margin: '0 0 10px',
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      {removedVariantIds.size} colourway
-                      {removedVariantIds.size === 1 ? '' : 's'} will be deleted
-                      when you press Save changes — permanently, along with any
-                      uploaded model and feedback attached to it. Click ↩ on a
-                      faded chip to undo, or Cancel to discard everything.
-                    </p>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      className="crm-input"
-                      placeholder="e.g. Grey"
-                      value={variantDraft}
-                      disabled={busy}
-                      onChange={(e) => setVariantDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          stageVariant();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="crm-btn crm-btn-secondary"
-                      onClick={stageVariant}
-                      disabled={busy || !variantDraft.trim()}
-                      style={{ whiteSpace: 'nowrap' }}
-                    >
-                      Add variant
-                    </button>
-                  </div>
-
-                  {variantErr && (
-                    <div className="crm-error" style={{ marginTop: 10 }}>
-                      {variantErr}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
 
             <div
               style={{

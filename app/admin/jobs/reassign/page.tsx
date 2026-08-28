@@ -39,38 +39,58 @@ type ProjectRow = {
     | { id: string; name: string; email: string }
     | { id: string; name: string; email: string }[]
     | null;
+  model_type: 'parent' | 'child' | null;
+  parent_id: string | null;
 };
 
 export default async function ReassignJobsPage() {
   const user = await requireUser('admin');
 
-  const [{ data: rawProjects }, { data: artists }] = await Promise.all([
-    supabase()
-      .from('uflow_projects')
-      .select(
-        'id, slug, name, status, revision_count, assigned_to, updated_at, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
-      )
-      .in('status', [
-        'draft',
-        'iqa_rejected',
-        'eqa_rejected',
-        'wip',
-        'iqa_wip',
-        'eqa_wip',
-      ])
-      .order('updated_at', { ascending: false }),
-    supabase()
-      .from('uflow_users')
-      .select('id, name, email')
-      .eq('role', '3d_artist')
-      .order('name'),
-  ]);
+  const [{ data: rawProjects }, { data: artists }, { data: allNames }] =
+    await Promise.all([
+      supabase()
+        .from('uflow_projects')
+        .select(
+          'id, slug, name, status, revision_count, assigned_to, updated_at, model_type, parent_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email)'
+        )
+        .in('status', [
+          'draft',
+          'iqa_rejected',
+          'eqa_rejected',
+          'wip',
+          'iqa_wip',
+          'eqa_wip',
+        ])
+        .order('updated_at', { ascending: false }),
+      supabase()
+        .from('uflow_users')
+        .select('id, name, email')
+        .eq('role', '3d_artist')
+        .order('name'),
+      // Names only, unfiltered. This page loads just the OPEN
+      // jobs, but a child's parent is often approved or in
+      // review, so resolving parent names from the filtered set
+      // would leave most of them blank. Two columns across every
+      // row is cheap next to a wrong-looking table.
+      supabase().from('uflow_projects').select('id, name'),
+    ]);
+
+  const parentNames = new Map(
+    (allNames || []).map((p) => [p.id as string, p.name as string])
+  );
 
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
     const a = Array.isArray(r.assignee) ? r.assignee[0] : r.assignee;
-    return { ...r, client: c ?? { slug: '', name: '' }, assignee: a };
+    return {
+      ...r,
+      client: c ?? { slug: '', name: '' },
+      assignee: a,
+      model_type: r.model_type ?? 'parent',
+      parent_id: r.parent_id ?? null,
+      parent_name: r.parent_id ? parentNames.get(r.parent_id) ?? null : null,
+    };
   });
 
   return (

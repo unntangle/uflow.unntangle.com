@@ -1,6 +1,5 @@
 import { requireUser } from '../../../lib/auth';
 import { supabase, ProjectStatus } from '../../../lib/supabase';
-import { VARIANT_SELECT, sortVariants } from '../../../lib/variant-status';
 import ListJobsPage from './ListJobsPage';
 
 // ============================================================
@@ -50,23 +49,10 @@ type ProjectRow = {
   // (id + url only) so the Reference column can render thumbnails
   // without a second round-trip per row.
   references: { id: string; image_url: string }[] | null;
-  // Colourways, rendered as collapsible child rows. The status
-  // shown on the parent is derived from these, not from the
-  // project's own column.
-  variants:
-    | {
-        id: string;
-        name: string;
-        slug: string;
-        status: ProjectStatus;
-        revision_count: number;
-        glb_url: string | null;
-        approved_glb_url: string | null;
-        is_primary: boolean;
-        position: number;
-        updated_at: string;
-      }[]
-    | null;
+  // Where this job sits in the hierarchy, per the 2026-08-28
+  // migration. Every pre-existing job defaulted to 'parent'.
+  model_type: 'parent' | 'child' | null;
+  parent_id: string | null;
 };
 
 export default async function AdminListJobsPage() {
@@ -75,7 +61,7 @@ export default async function AdminListJobsPage() {
   const { data: rawProjects, error } = await supabase()
     .from('uflow_projects')
     .select(
-      `id, slug, name, status, revision_count, assigned_to, complexity, category, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), references:uflow_project_references(id, image_url), ${VARIANT_SELECT}`
+      `id, slug, name, status, revision_count, assigned_to, complexity, category, created_at, updated_at, client_id, model_type, parent_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), references:uflow_project_references(id, image_url)`
     )
     .order('updated_at', { ascending: false });
 
@@ -85,6 +71,15 @@ export default async function AdminListJobsPage() {
     console.error('[admin.jobs.list] query failed', error);
     throw new Error(`Could not load jobs: ${error.message}`);
   }
+
+  // This page loads EVERY job, so a child's parent is always in
+  // the same result set — no second query needed. Resolved via a
+  // map rather than a self-referencing PostgREST embed, which
+  // would take the whole page down if the FK constraint hint
+  // were ever wrong.
+  const parentNames = new Map(
+    (rawProjects || []).map((p) => [p.id as string, p.name as string])
+  );
 
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;
@@ -99,7 +94,9 @@ export default async function AdminListJobsPage() {
       complexity: r.complexity ?? null,
       category: r.category ?? null,
       references: r.references ?? [],
-      variants: sortVariants(r.variants),
+      model_type: r.model_type ?? 'parent',
+      parent_id: r.parent_id ?? null,
+      parent_name: r.parent_id ? parentNames.get(r.parent_id) ?? null : null,
     };
   });
 

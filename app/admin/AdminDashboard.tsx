@@ -1,9 +1,10 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Trash2 } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
+import TypeBadge, { ModelType } from '../components/TypeBadge';
 import Sidebar from '../components/Sidebar';
 import {
   CLIENT_FILTER_EVENT,
@@ -15,12 +16,7 @@ import {
   SortableTh,
   statusRank,
 } from '../lib/use-table-sort';
-import {
-  anyVariantIn,
-  allVariantsApproved,
-  sortVariants,
-  effectiveUpdatedAt,
-} from '../lib/variant-status';
+import { useLiveRefresh } from '../lib/use-live-refresh';
 
 // ============================================================
 // Types
@@ -75,30 +71,35 @@ type Project = {
   // created without references. Drives the References column
   // thumbnail; the full set still lives on the gallery page.
   thumb_url?: string | null;
-  // Colourways of this product, ordered by position. The table
-  // shows one row per PRODUCT; these render as indented child
-  // rows when the product is expanded.
-  variants?: Variant[];
-};
-
-// A colourway. Carries its own status and revision count because
-// each variant runs the pipeline independently — Grey can be
-// approved while Black is still in IQA.
-type Variant = {
-  id: string;
-  name: string;
-  slug: string;
-  status: Project['status'];
-  revision_count: number;
-  glb_url: string | null;
-  approved_glb_url: string | null;
-  is_primary: boolean;
-  position: number;
-  updated_at: string;
+  // Where this job sits in the hierarchy. Colourways used to be
+  // sub-rows on this type; since the 2026-08-29 promotion each is
+  // its own job linked back by parent_id.
+  model_type?: ModelType | null;
+  parent_id?: string | null;
+  parent_name?: string | null;
 };
 
 type Client = { slug: string; name: string };
 type Artist = { id: string; name: string; email: string };
+
+// One job, one row, one status — so tab membership is a plain
+// containment test again.
+function isIn(p: Project, statuses: Project['status'][]): boolean {
+  return statuses.includes(p.status);
+}
+
+// Colour for a child row's name and elbow in the grouped view.
+//
+// A deliberate indigo rather than a token from the status
+// palette: green/amber/red all mean "stage" on this table, and
+// reusing one here would read as a status claim. Indigo isn't
+// used by any badge, so it can only mean "derived from the row
+// above".
+//
+// Dark enough to stay legible on the zebra-striped rows — the
+// indent and the elbow are the primary signal, this just makes
+// the grouping visible when scanning quickly.
+const CHILD_TEXT = '#4c51bf';
 
 
 // ============================================================
@@ -201,59 +202,37 @@ export default function AdminDashboard({
   }, [projects, selectedClientId]);
 
   // ----- Buckets (by stage) -----
-  // Queues use ANY-variant membership, not the roll-up: a product
-  // with Black awaiting QA and Original mid-revision belongs in
-  // BOTH the IQA and WIP tabs, because two different people each
-  // have something to do on it. Bucketing on the roll-up would
-  // hide the variant awaiting review entirely.
-  //
-  // Consequence: one product can appear in several tabs at once.
-  // That's accurate rather than duplication — the tab counts now
-  // measure outstanding work, not a partition of the job list.
-  //
-  // Approved is the exception: it needs EVERY colourway signed
-  // off, which is what the roll-up gives.
+  // One job, one status, one bucket. Before the 2026-08-29
+  // promotion a product could land in several tabs at once,
+  // because each of its colourways carried its own status and
+  // membership was tested with anyVariantIn(). Now a colourway IS
+  // a job, so it appears in its own right and the tabs partition
+  // the list again.
   const yta = visibleProjects.filter(
-    (p) => anyVariantIn(p, ['draft']) && p.assigned_to === null
+    (p) => isIn(p, ['draft']) && p.assigned_to === null
   );
   const yts = visibleProjects.filter(
-    (p) => anyVariantIn(p, ['draft']) && p.assigned_to !== null
+    (p) => isIn(p, ['draft']) && p.assigned_to !== null
   );
   const wip = visibleProjects.filter((p) =>
-    anyVariantIn(p, ['wip', 'iqa_wip', 'eqa_wip'])
+    isIn(p, ['wip', 'iqa_wip', 'eqa_wip'])
   );
-  const iqa = visibleProjects.filter((p) =>
-    anyVariantIn(p, ['qa_pending'])
-  );
+  const iqa = visibleProjects.filter((p) => isIn(p, ['qa_pending']));
   const iqaRejected = visibleProjects.filter((p) =>
-    anyVariantIn(p, ['iqa_rejected'])
+    isIn(p, ['iqa_rejected'])
   );
-  const eqa = visibleProjects.filter((p) =>
-    anyVariantIn(p, ['client_review'])
-  );
+  const eqa = visibleProjects.filter((p) => isIn(p, ['client_review']));
   const eqaRejected = visibleProjects.filter((p) =>
-    anyVariantIn(p, ['eqa_rejected'])
+    isIn(p, ['eqa_rejected'])
   );
-  // Hold and Open Jobs are DISJOINT: any paused colourway puts
-  // the product under Hold and takes it out of Open Jobs
-  // entirely. Not "every colourway paused" — that let a product
-  // with one held colourway and one live one sit in Open Jobs
-  // wearing an "On Hold by Client" badge, which reads as a
-  // contradiction whatever the underlying data says.
-  //
-  // The trade-off is deliberate: a product with Black held and
-  // Grey in WIP disappears from Open Jobs even though Grey is
-  // live work. It's still in the WIP tab, which is where someone
-  // looking for work to do would find it, and Open Jobs stays
-  // readable as "jobs actually moving".
-  const hold = visibleProjects.filter((p) => anyVariantIn(p, ['on_hold']));
-  // Open Jobs = the rollup view: everything not fully signed off
-  // and not blocked. Both exclusions exist so the count means
-  // something — it should be work someone can act on today.
+  const hold = visibleProjects.filter((p) => isIn(p, ['on_hold']));
+  // Open Jobs = everything not fully signed off and not blocked.
+  // Both exclusions exist so the count means something — it
+  // should be work someone can act on today.
   const openJobs = visibleProjects.filter(
-    (p) => !allVariantsApproved(p) && !anyVariantIn(p, ['on_hold'])
+    (p) => p.status !== 'approved' && p.status !== 'on_hold'
   );
-  const history = visibleProjects.filter((p) => allVariantsApproved(p));
+  const history = visibleProjects.filter((p) => p.status === 'approved');
 
   // Mode plumbing.
   const tabParam = searchParams?.get('tab');
@@ -333,11 +312,33 @@ export default function AdminDashboard({
       : allowedTabs[0];
   const [tab, setTab] = useState<Tab>(initialTab);
 
+  // ----- Secondary view: flat list vs grouped by parent -----
+  // 'all'    — one row per job, as before.
+  // 'parent' — children are pulled underneath the model they were
+  //            derived from, so a family reads as a block.
+  //
+  // This is a VIEW over whichever status tab is selected, not a
+  // filter: no job is hidden by switching to 'parent'. That's the
+  // point — the counts in the tab bar above must keep matching
+  // what's in the table.
+  type Grouping = 'all' | 'parent';
+  const [grouping, setGrouping] = useState<Grouping>('all');
+
   function refreshProjects() {
     crmFetch('/api/projects')
       .then((r) => r.json())
       .then((d) => {
         if (d.projects) {
+          // Parent names come from the same payload rather than a
+          // self-referencing embed — see the note on the select in
+          // /api/projects. Admins get every job, so a child's
+          // parent is always present here.
+          const parentNames = new Map<string, string>(
+            d.projects.map((p: { id: string; name: string }) => [
+              p.id,
+              p.name,
+            ])
+          );
           const norm = d.projects.map(
             (
               p: Project & {
@@ -353,7 +354,6 @@ export default function AdminDashboard({
                 // below, mirroring what app/admin/page.tsx does
                 // on SSR so a refresh doesn't drop the thumbnail.
                 references?: { image_url: string; created_at: string }[] | null;
-                variants?: Variant[] | null;
               }
             ) => {
               const cr = Array.isArray(p.creator)
@@ -373,9 +373,11 @@ export default function AdminDashboard({
                 creator: undefined,
                 thumb_url: firstRef?.image_url ?? null,
                 references: undefined,
-                variants: [...(p.variants ?? [])].sort(
-                  (x, y) => (x.position ?? 0) - (y.position ?? 0)
-                ),
+                model_type: p.model_type ?? 'parent',
+                parent_id: p.parent_id ?? null,
+                parent_name: p.parent_id
+                  ? parentNames.get(p.parent_id) ?? null
+                  : null,
               };
             }
           );
@@ -383,6 +385,13 @@ export default function AdminDashboard({
         }
       });
   }
+
+  // Keep the Overview current without a manual reload. Read-only
+  // surface — the only local state a refetch could disturb is
+  // which tab is selected, and that lives outside `projects`.
+  // The assign/delete modals hold their own copy of the row they
+  // act on, so an in-flight refresh can't retarget them either.
+  useLiveRefresh(refreshProjects);
 
   // Resolve the project list for the currently-selected tab so the
   // table render can be unified rather than duplicated nine times.
@@ -615,6 +624,7 @@ export default function AdminDashboard({
                 <thead>
                   <tr>
                     <SortableTh label="Project" sortKey="name" sort={ytaSort.sort} onSort={ytaSort.onSort} />
+                    <th>Type</th>
                     <th>References</th>
                     <SortableTh label="Client" sortKey="client" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <SortableTh label="Created" sortKey="created" sort={ytaSort.sort} onSort={ytaSort.onSort} />
@@ -630,6 +640,13 @@ export default function AdminDashboard({
                         <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
                           {p.slug}
                         </span>
+                      </td>
+                      <td>
+                        <TypeBadge
+                          modelType={p.model_type}
+                          parentId={p.parent_id}
+                          parentName={p.parent_name}
+                        />
                       </td>
                       <td>
                         <ReferenceThumb project={p} />
@@ -712,6 +729,52 @@ export default function AdminDashboard({
           )}
 
           {/* ============================== Per-tab body ============================== */}
+          {/* Secondary view switch. Sits under the status tabs
+              because it re-arranges whatever those selected — it
+              never changes which jobs are shown, only their
+              order and indentation. */}
+          {!isAllocationMode && tabProjects.length > 0 && (
+            <div
+              className="crm-tabs"
+              role="tablist"
+              aria-label="Grouping"
+              style={{ marginTop: -4, marginBottom: 4 }}
+            >
+              <button
+                role="tab"
+                aria-selected={grouping === 'all'}
+                className={`crm-tab ${grouping === 'all' ? 'is-active' : ''}`}
+                onClick={() => setGrouping('all')}
+                title="One row per job, in sort order"
+              >
+                All
+                <span className="crm-tab-count">{tabProjects.length}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={grouping === 'parent'}
+                className={`crm-tab ${
+                  grouping === 'parent' ? 'is-active' : ''
+                }`}
+                onClick={() => setGrouping('parent')}
+                title="Group each child under the model it was derived from"
+              >
+                Parent
+                <span className="crm-tab-count">
+                  {
+                    new Set(
+                      tabProjects.map((p) =>
+                        p.model_type === 'child' && p.parent_id
+                          ? p.parent_id
+                          : p.id
+                      )
+                    ).size
+                  }
+                </span>
+              </button>
+            </div>
+          )}
+
           {!isAllocationMode && (
             tabProjects.length === 0 ? (
               <EmptyMini message={currentMeta.emptyMsg} />
@@ -719,6 +782,11 @@ export default function AdminDashboard({
               <ProjectTable
                 projects={tabProjects}
                 meta={currentMeta}
+                grouping={grouping}
+                // Every job, not just this tab's — a child's parent
+                // is frequently at a different stage, so the group
+                // header needs a name the bucket can't supply.
+                allProjects={projects}
                 onReview={(p) => router.push(crmPath(`/admin/qa/${p.id}`))}
                 onAssign={(p) => setReassigning(p)}
                 // Delete is wired in for every tab; the per-row
@@ -846,7 +914,7 @@ function adminStatusLabel(p: Project): string {
   // badges, so the export matches what the admin is looking at.
   // Colourways aren't broken out: the CSV is one line per
   // product, same as the table.
-  const status = primaryStatus(p);
+  const status = p.status;
   if (status === 'draft') {
     return p.assigned_to ? 'YTS' : 'YTA';
   }
@@ -877,113 +945,18 @@ function csvEscape(value: string): string {
 
 // ============================================================
 // Row helpers
-//
-// uflow_projects.status has been legacy since the variants
-// migration — only the single-model path writes it, so it goes
-// stale the moment a colourway moves on its own. Everything a
-// row renders is derived from the colourway rows instead.
-//
-// primaryStatus is the ORIGINAL's status, used by the CSV export
-// (one line per product, so it needs a single value).
-// displayStatuses is what the table renders — see below.
 // ============================================================
-function primaryVariant(p: Project): Variant | null {
-  return (p.variants ?? []).find((v) => v.is_primary) ?? null;
-}
+// These all used to derive a row's status, timestamp and asset
+// from its colourway rows, because uflow_projects.status went
+// stale the moment a colourway moved on its own. The 2026-08-29
+// promotion copied that state back onto the project row and made
+// every colourway a job in its own right, so the project's own
+// columns are authoritative again and the derivation is gone.
 
-// Falls back to the product's own columns when there are no
-// variant rows at all (pre-migration data, or a backfill that
-// didn't run), so those rows behave exactly as they used to.
-function primaryStatus(p: Project): Project['status'] {
-  return primaryVariant(p)?.status ?? p.status;
-}
-
-// ------------------------------------------------------------
-// leadVariant
-//
-// The colourway a row LEADS WITH inside a given tab: the first
-// one in that tab's stage, falling back to the primary.
-//
-// A product lands in a tab because ANY colourway is in that
-// tab's stage (anyVariantIn), and that colourway is often not
-// the original. Leading with the original then puts a WIP job
-// under IQA — the row names and badges something the tab isn't
-// asking about. So the row leads with the colourway that put it
-// there; the others are one click away.
-//
-// Outside a stage queue (Open Jobs, Approved) there's nothing to
-// match on, so the primary leads — the product's own identity.
-// Returns null when there are no variant rows at all
-// (pre-migration data), and callers fall back to the product's
-// own columns.
-// ------------------------------------------------------------
-function leadVariant(
-  p: Project,
-  queueStatuses?: Project['status'][]
-): Variant | null {
-  const vs = sortVariants(p.variants ?? []) as Variant[];
-  if (vs.length === 0) return null;
-  const qs = queueStatuses ?? [];
-  return (
-    vs.find((v) => qs.includes(v.status)) ??
-    vs.find((v) => v.is_primary) ??
-    vs[0]
-  );
-}
-
-// ------------------------------------------------------------
-// uploadedAt
-//
-// The timestamp the "Uploaded" column shows for a product row.
-//
-// It is NOT uflow_projects.updated_at, which is what this column
-// used to read. Since the variants migration, finalize-upload
-// writes ONLY the targeted colourway ("When a variant was
-// targeted we write ONLY the variant row"), so the product's own
-// timestamp freezes at whatever last touched the product itself
-// — usually the day it was created. That's why a row could show
-// an Uploaded date older than the file its own View GLB opens.
-//
-// Inside a stage queue the row leads with one colourway and
-// badges that colourway's status, revision and asset, so the
-// date has to come from the same row — otherwise "Uploaded"
-// describes a different file than the rest of the line does.
-//
-// Outside a stage queue (Open Jobs, Approved) the row stands for
-// the whole product, so the honest answer is the newest stamp
-// anywhere on it. effectiveUpdatedAt already encodes that rule,
-// including the fallback for pre-migration rows with no variants.
-//
-// Returns null when there's no usable timestamp at all, so the
-// cell renders an em-dash rather than 01/01/1970.
-// ------------------------------------------------------------
-function uploadedAt(
-  p: Project,
-  lead: Variant | null,
-  queueStatuses?: Project['status'][]
-): string | null {
-  if (queueStatuses && queueStatuses.length > 0 && lead) {
-    return lead.updated_at ?? null;
-  }
-  const ms = effectiveUpdatedAt(p);
-  return ms ? new Date(ms).toISOString() : null;
-}
-
-// True when every colourway is still a draft, i.e. nothing has
-// been started anywhere. Delete purges the WHOLE job, so it can't
-// key off one colourway.
-function allVariantsDraft(p: Project): boolean {
-  const vs = p.variants ?? [];
-  if (vs.length === 0) return p.status === 'draft';
-  return vs.every((v) => v.status === 'draft');
-}
-
-// A colourway's display name. The primary's stored name is a
-// backfill artefact — the variants migration inserted every
-// pre-existing project as a variant literally called 'Original'.
-// The primary variant IS the product, so show the product's name.
-function variantLabel(p: Project, v: Variant): string {
-  return v.is_primary ? p.name : v.name;
+// True when the job hasn't been started. Delete is only offered
+// on untouched jobs.
+function isDraft(p: Project): boolean {
+  return p.status === 'draft';
 }
 
 function downloadProjectsCsv(projects: Project[], suffix: string) {
@@ -1025,6 +998,8 @@ function downloadProjectsCsv(projects: Project[], suffix: string) {
 function ProjectTable({
   projects,
   meta,
+  grouping = 'all',
+  allProjects,
   onReview,
   onAssign,
   onDelete,
@@ -1038,6 +1013,8 @@ function ProjectTable({
     queueStatuses?: Project['status'][];
     actionKind: 'review' | 'assign' | 'reassign' | 'none';
   };
+  grouping?: 'all' | 'parent';
+  allProjects?: Project[];
   onReview: (p: Project) => void;
   onAssign: (p: Project) => void;
   onDelete?: (p: Project) => void;
@@ -1053,46 +1030,105 @@ function ProjectTable({
   // opts out (YTA) loses it.
   const showArtist = meta.showArtist !== false;
 
-  // Which products the user has expanded. Collapsed by default —
-  // the status cell now badges every stage the product occupies,
-  // so a split row explains itself without being opened.
-  const [toggled, setToggled] = useState<Set<string>>(new Set());
-  function toggleExpanded(id: string) {
-    setToggled((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   // Per-column sort. Artist/Project/Client/Revision sort by their
   // natural value; Created/Updated chronologically; Status by
   // pipeline rank. Cycles asc -> desc -> off (default order).
-  //
-  // Status and Revision sort on the LEADING colourway — the one
-  // the row shows — rather than the roll-up or the stale product
-  // columns behind it.
   const { sorted, sort, onSort } = useTableSort(projects, {
     artist: (p) => p.assignee?.name ?? null,
     name: (p) => p.name,
     client: (p) => p.client.name,
-    revision: (p) =>
-      leadVariant(p, meta.queueStatuses)?.revision_count ?? p.revision_count,
+    revision: (p) => p.revision_count,
     created: (p) => new Date(p.created_at),
-    // Sorts on the same value the cell renders, so clicking
-    // Uploaded orders rows by the date they actually show.
-    updated: (p) => {
-      const at = uploadedAt(
-        p,
-        leadVariant(p, meta.queueStatuses),
-        meta.queueStatuses
-      );
-      return at ? new Date(at) : null;
-    },
-    status: (p) =>
-      statusRank(leadVariant(p, meta.queueStatuses)?.status ?? p.status),
+    updated: (p) => (p.updated_at ? new Date(p.updated_at) : null),
+    status: (p) => statusRank(p.status),
+    // Groups parents together and children together.
+    type: (p) => p.model_type ?? 'parent',
   });
+
+  // ------------------------------------------------------------
+  // Display rows
+  // ------------------------------------------------------------
+  // In 'all' mode this is just the sorted list. In 'parent' mode
+  // each child is moved to sit directly under the model it came
+  // from, WITHOUT dropping anything: a child whose parent is at a
+  // different stage (and so isn't in this tab) still has to
+  // appear, or the table would silently disagree with the count
+  // in the tab above it.
+  //
+  // That case gets a header row naming the absent parent, so the
+  // child is still shown in context rather than floating
+  // unexplained at the bottom of the table.
+  //
+  // Sorting is preserved: groups appear in the sorted order of
+  // their parents, and children in sorted order within a group.
+  type DisplayRow =
+    | { kind: 'job'; p: Project; indented: boolean }
+    | { kind: 'group'; label: string };
+
+  const displayRows: DisplayRow[] = useMemo(() => {
+    if (grouping !== 'parent') {
+      return sorted.map((p) => ({ kind: 'job' as const, p, indented: false }));
+    }
+
+    const childrenOf = new Map<string, Project[]>();
+    const topLevel: Project[] = [];
+    for (const p of sorted) {
+      if (p.model_type === 'child' && p.parent_id) {
+        const list = childrenOf.get(p.parent_id);
+        if (list) list.push(p);
+        else childrenOf.set(p.parent_id, [p]);
+      } else {
+        topLevel.push(p);
+      }
+    }
+
+    const rows: DisplayRow[] = [];
+    const placed = new Set<string>();
+
+    for (const parent of topLevel) {
+      rows.push({ kind: 'job', p: parent, indented: false });
+      for (const child of childrenOf.get(parent.id) ?? []) {
+        rows.push({ kind: 'job', p: child, indented: true });
+      }
+      placed.add(parent.id);
+    }
+
+    // Children whose parent isn't in this tab. Grouped under a
+    // label so they still read as a family.
+    const lookup = new Map(
+      (allProjects ?? []).map((p) => [p.id, p.name] as const)
+    );
+    for (const [parentId, kids] of childrenOf) {
+      if (placed.has(parentId)) continue;
+      const name = lookup.get(parentId);
+      rows.push({
+        kind: 'group',
+        label: name
+          ? `${name} — not in this tab`
+          : 'Parent removed',
+      });
+      for (const child of kids) {
+        rows.push({ kind: 'job', p: child, indented: true });
+      }
+    }
+
+    return rows;
+  }, [sorted, grouping, allProjects]);
+
+  // Column count, for the group header row's colspan. Kept next to
+  // the <thead> below so the two can't drift.
+  const columnCount =
+    (showArtist ? 1 : 0) +
+    1 + // Project
+    1 + // Type
+    1 + // References
+    1 + // Client
+    (meta.showRevision ? 1 : 0) +
+    1 + // Created
+    1 + // Uploaded
+    (meta.showAsset ? 1 : 0) +
+    1 + // Status
+    (hasAction ? 1 : 0);
 
   return (
     <table className="crm-table">
@@ -1102,6 +1138,7 @@ function ProjectTable({
             <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
           )}
           <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
+          <SortableTh label="Type" sortKey="type" sort={sort} onSort={onSort} />
           <th>References</th>
           <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
           {meta.showRevision && (
@@ -1115,27 +1152,31 @@ function ProjectTable({
         </tr>
       </thead>
       <tbody>
-        {sorted.map((p) => {
-          // The colourway this row leads with — the one that put
-          // the product in this tab. Its name, status, revision
-          // and asset are what the collapsed row shows.
-          const lead = leadVariant(p, meta.queueStatuses);
-          const leadStatus = lead?.status ?? p.status;
-          const leadName = lead ? variantLabel(p, lead) : p.name;
-          const rev = lead ? lead.revision_count : p.revision_count;
-          const leadGlb = lead
-            ? lead.approved_glb_url || lead.glb_url
-            : p.approved_glb_url || p.glb_url;
-          const allVariants = sortVariants(p.variants ?? []) as Variant[];
-          // Everything the lead row isn't. Expanding reveals these
-          // — including the primary, when a colourway is leading.
-          const rest = allVariants.filter((v) => v.id !== lead?.id);
-          const canExpand = rest.length > 0;
-          const isOpen = toggled.has(p.id);
+        {displayRows.map((row) => {
+          if (row.kind === 'group') {
+            return (
+              <tr key={`group-${row.label}`}>
+                <td
+                  colSpan={columnCount}
+                  style={{
+                    background: 'var(--surface-2, rgba(0,0,0,0.03))',
+                    color: 'var(--text-dim)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {row.label}
+                </td>
+              </tr>
+            );
+          }
+
+          const p = row.p;
+          const rev = p.revision_count;
+          const leadGlb = p.approved_glb_url || p.glb_url;
 
           return (
-          <Fragment key={p.id}>
-          <tr>
+          <tr key={p.id}>
             {showArtist && (
               <td>
                 {p.assignee?.name || (
@@ -1144,76 +1185,57 @@ function ProjectTable({
               </td>
             )}
             <td>
-              {/* Disclosure toggle. Only worth rendering when the
-                  product actually has more than one colourway — a
-                  product carrying just its backfilled primary has
-                  nothing to expand to. */}
-              {canExpand ? (
-                <button
-                  type="button"
-                  onClick={() => toggleExpanded(p.id)}
-                  aria-expanded={isOpen}
-                  aria-label={
-                    isOpen ? 'Hide colourways' : 'Show colourways'
-                  }
-                  title={`${allVariants.length} colourways`}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 6,
+                  textAlign: 'left',
+                  // Children sit under their parent in grouped
+                  // view; the indent plus the elbow is what makes
+                  // the family readable at a glance.
+                  paddingLeft: row.indented ? 18 : 0,
+                }}
+              >
+                <span
+                  aria-hidden
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    font: 'inherit',
-                    color: 'inherit',
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 6,
-                    textAlign: 'left',
+                    display: 'inline-block',
+                    width: 10,
+                    flex: 'none',
+                    color: row.indented ? CHILD_TEXT : 'var(--text-faint)',
                   }}
                 >
-                  <span
-                    aria-hidden
+                  {row.indented ? '└' : ''}
+                </span>
+                <span>
+                  <strong
                     style={{
-                      color: 'var(--text-faint)',
-                      fontSize: 10,
-                      transform: isOpen ? 'rotate(90deg)' : 'none',
-                      transition: 'transform 0.12s',
-                      display: 'inline-block',
+                      display: 'block',
+                      color: row.indented ? CHILD_TEXT : undefined,
                     }}
                   >
-                    ▶
-                  </span>
-                  <span>
-                    <strong style={{ display: 'block' }}>{leadName}</strong>
-                    <span
-                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
-                    >
-                      {p.slug} · {allVariants.length} colourways
-                    </span>
-                  </span>
-                </button>
-              ) : (
-                // Spacer stands in for the arrow so names line up
-                // whether or not a product has colourways.
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 6,
-                    textAlign: 'left',
-                  }}
-                >
+                    {p.name}
+                  </strong>
                   <span
-                    aria-hidden
-                    style={{ display: 'inline-block', width: 10, flex: 'none' }}
-                  />
-                  <span>
-                    <strong style={{ display: 'block' }}>{leadName}</strong>
-                    <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                      {p.slug}
-                    </span>
+                    style={{
+                      color: row.indented
+                        ? 'color-mix(in srgb, #4c51bf 55%, transparent)'
+                        : 'var(--text-faint)',
+                      fontSize: 12,
+                    }}
+                  >
+                    {p.slug}
                   </span>
-                </div>
-              )}
+                </span>
+              </div>
+            </td>
+            <td>
+              <TypeBadge
+                modelType={p.model_type}
+                parentId={p.parent_id}
+                parentName={p.parent_name}
+              />
             </td>
             <td>
               <ReferenceThumb project={p} />
@@ -1235,7 +1257,7 @@ function ProjectTable({
                       //                 and historical on qa_pending /
                       //                 client_review / approved rows)
                       `/projects/${p.id}/feedback?revision=${rev}${
-                        leadStatus === 'eqa_rejected' ? '&source=client' : ''
+                        p.status === 'eqa_rejected' ? '&source=client' : ''
                       }`
                     )}
                     target="_blank"
@@ -1254,23 +1276,13 @@ function ProjectTable({
               </td>
             )}
             <DateCell value={p.created_at} />
-            <DateCell
-              value={uploadedAt(p, lead, meta.queueStatuses)}
-              withTime
-            />
+            <DateCell value={p.updated_at} withTime />
             {meta.showAsset && (
               <td>
                 {leadGlb && (
                   <a
                     className="crm-link"
-                    // Scoped to the leading colourway, so the
-                    // viewer opens on the model this row names
-                    // rather than the product's primary.
-                    href={crmPath(
-                      `/admin/qa/${p.id}/model${
-                        lead ? `?variant=${lead.id}` : ''
-                      }`
-                    )}
+                    href={crmPath(`/admin/qa/${p.id}/model`)}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -1280,10 +1292,8 @@ function ProjectTable({
               </td>
             )}
             <td>
-              {/* The leading colourway's own status — the stage
-                  that put this row in this tab. */}
               <StatusBadge
-                status={leadStatus}
+                status={p.status}
                 revisionCount={rev}
                 assigned={p.assigned_to !== null}
               />
@@ -1335,7 +1345,7 @@ function ProjectTable({
                       hard-checked on the server too; this is the
                       UX layer hiding the affordance for cases
                       where the call would 404/409. */}
-                  {onDelete && allVariantsDraft(p) && p.created_by_admin && (
+                  {onDelete && isDraft(p) && p.created_by_admin && (
                       <button
                         type="button"
                         className="crm-btn crm-btn-ghost-danger crm-btn-icon"
@@ -1351,87 +1361,6 @@ function ProjectTable({
               </td>
             )}
           </tr>
-
-          {/* ---- Colourway child rows ----
-              The colourways this row ISN'T leading with, including
-              the primary when a variant is leading. Real table
-              rows (not a nested table) so the columns stay aligned
-              with the parent. */}
-          {isOpen &&
-            rest.map((v) => (
-              <tr
-                key={v.id}
-                style={{ background: 'var(--surface-2, transparent)' }}
-              >
-                {showArtist && <td />}
-                <td style={{ paddingLeft: 28 }}>
-                  <span
-                    style={{ color: 'var(--text-faint)', marginRight: 6 }}
-                    aria-hidden
-                  >
-                    └
-                  </span>
-                  <strong style={{ fontWeight: 600 }}>
-                    {variantLabel(p, v)}
-                  </strong>
-                  {v.is_primary && (
-                    <span
-                      className="crm-badge crm-badge-draft"
-                      style={{
-                        fontSize: 10,
-                        padding: '1px 6px',
-                        marginLeft: 6,
-                      }}
-                      title="The original file this product was built from"
-                    >
-                      Primary
-                    </span>
-                  )}
-                </td>
-                {/* References are shared across colourways, so
-                    there's nothing variant-specific to show. */}
-                <td />
-                <td />
-                {meta.showRevision && (
-                  <td style={{ color: 'var(--text-dim)' }}>
-                    {v.revision_count}
-                  </td>
-                )}
-                <td />
-                <DateCell value={v.updated_at} withTime />
-                {meta.showAsset && (
-                  <td>
-                    {(v.approved_glb_url || v.glb_url) && (
-                      <a
-                        className="crm-link"
-                        // Point at the in-app viewer, not the raw
-                        // R2 URL. A .glb link triggers a browser
-                        // download; the viewer route renders it.
-                        // ?variant scopes it to THIS colourway so
-                        // the tab opens on the model in this row
-                        // rather than the product's primary.
-                        href={crmPath(
-                          `/admin/qa/${p.id}/model?variant=${v.id}`
-                        )}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        View GLB
-                      </a>
-                    )}
-                  </td>
-                )}
-                <td>
-                  <StatusBadge
-                    status={v.status}
-                    revisionCount={v.revision_count}
-                    assigned={p.assigned_to !== null}
-                  />
-                </td>
-                {hasAction && <td />}
-              </tr>
-            ))}
-          </Fragment>
           );
         })}
       </tbody>

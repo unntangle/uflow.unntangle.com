@@ -51,23 +51,11 @@ type ProjectRow = {
   // earliest one in the normaliser below, so the dashboard can
   // render a thumbnail without an N+1 fetch per row.
   references: { image_url: string; created_at: string }[] | null;
-  // Colourways of this product. Rendered as collapsible child
-  // rows beneath the product, so the table still shows ONE row
-  // per product at rest.
-  variants:
-    | {
-        id: string;
-        name: string;
-        slug: string;
-        status: ProjectStatus;
-        revision_count: number;
-        glb_url: string | null;
-        approved_glb_url: string | null;
-        is_primary: boolean;
-        position: number;
-        updated_at: string;
-      }[]
-    | null;
+  // Where this job sits in the hierarchy, per the 2026-08-28
+  // migration. Colourways used to be sub-rows here; since the
+  // 2026-08-29 promotion each is its own job linked by parent_id.
+  model_type: 'parent' | 'child' | null;
+  parent_id: string | null;
 };
 
 export default async function AdminPage() {
@@ -78,7 +66,7 @@ export default async function AdminPage() {
       supabase()
         .from('uflow_projects')
         .select(
-          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at), variants:uflow_project_variants(id, name, slug, status, revision_count, glb_url, approved_glb_url, is_primary, position, updated_at)'
+          'id, slug, name, status, revision_count, glb_url, approved_glb_url, assigned_to, brief, created_at, updated_at, client_id, model_type, parent_id, client:uflow_clients(slug, name), assignee:uflow_users!uflow_projects_assigned_to_fkey(id, name, email), creator:uflow_users!uflow_projects_created_by_fkey(role), references:uflow_project_references(image_url, created_at)'
         )
         .order('updated_at', { ascending: false }),
       supabase()
@@ -99,6 +87,15 @@ export default async function AdminPage() {
     console.error('[admin.page] artist query failed', artistsError);
     throw new Error(`Could not load artists: ${artistsError.message}`);
   }
+
+  // This page loads EVERY job, so a child's parent is always in
+  // the same result set. Resolved via a map rather than a
+  // self-referencing PostgREST embed, which would fail the whole
+  // query — and take the Overview down — if the FK constraint
+  // hint were ever wrong.
+  const parentNames = new Map(
+    (rawProjects || []).map((p) => [p.id as string, p.name as string])
+  );
 
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;
@@ -127,11 +124,9 @@ export default async function AdminPage() {
       creator: undefined,
       thumb_url: firstRef?.image_url ?? null,
       references: undefined,
-      // Ordered for the child-row list. PostgREST can't sort an
-      // embedded resource independently, so it's done here.
-      variants: [...(r.variants ?? [])].sort(
-        (x, y) => (x.position ?? 0) - (y.position ?? 0)
-      ),
+      model_type: r.model_type ?? 'parent',
+      parent_id: r.parent_id ?? null,
+      parent_name: r.parent_id ? parentNames.get(r.parent_id) ?? null : null,
     };
   });
 

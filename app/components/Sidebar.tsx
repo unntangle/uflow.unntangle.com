@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   UserCircle,
   SlidersHorizontal,
+  GitBranch,
 } from 'lucide-react';
 import { crmFetch, crmPath } from '../lib/client-fetch';
 import ClientSwitcher, {
@@ -210,6 +211,7 @@ export default function Sidebar({
     isActive('/admin/jobs/new') ||
     isActive('/admin/jobs/reassign') ||
     isActive('/admin/jobs/status') ||
+    isActive('/admin/jobs/type') ||
     isActive('/admin/jobs/download');
   const [jobsOpen, setJobsOpen] = useState<boolean>(isOnJobsChild);
   useEffect(() => {
@@ -435,6 +437,26 @@ export default function Sidebar({
                         aria-hidden="true"
                       />
                       <span>Change Status</span>
+                    </button>
+                    {/* Structural override, next to Change Status
+                        for the same reason Change Status sits next
+                        to Reassign: all three correct a job by hand
+                        rather than by doing the work that would
+                        normally move it. This one changes where the
+                        job sits in the hierarchy — standalone, or
+                        derived from another model. */}
+                    <button
+                      className={`crm-sidebar-link crm-sidebar-link-child ${
+                        isActive('/admin/jobs/type') ? 'is-active' : ''
+                      }`}
+                      onClick={() => router.push(crmPath('/admin/jobs/type'))}
+                    >
+                      <GitBranch
+                        size={14}
+                        strokeWidth={1.75}
+                        aria-hidden="true"
+                      />
+                      <span>Change Type</span>
                     </button>
                     <button
                       className={`crm-sidebar-link crm-sidebar-link-child ${

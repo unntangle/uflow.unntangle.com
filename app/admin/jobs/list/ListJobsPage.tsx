@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Pencil,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
 import StatusBadge from '../../../components/StatusBadge';
+import TypeBadge, { ModelType } from '../../../components/TypeBadge';
 import {
   CLIENT_FILTER_EVENT,
   getStoredClientId,
@@ -24,57 +25,10 @@ import {
   statusRank,
 } from '../../../lib/use-table-sort';
 import {
-  extraVariants,
-  hasExtraVariants,
-} from '../../../lib/variant-status';
-import {
   categoryLabel,
   complexityLabel,
   complexityRank,
 } from '../../../lib/job-options';
-
-// ============================================================
-// The parent row IS the original
-//
-// Same rule the Overview and the artist dashboard follow: a
-// product row names the product, and the primary variant IS the
-// product — so the row badges the primary's status.
-//
-// Not rollupStatus (the LEAST ADVANCED colourway), which would
-// have this page contradict the Overview about the same job: an
-// original sitting in IQA would be badged WIP here by an
-// unstarted sibling. Not uflow_projects.status either — legacy
-// since the variants migration and stale as soon as a colourway
-// moves on its own.
-//
-// Falls back to the product's own column when there are no
-// variant rows at all (pre-migration data).
-// ============================================================
-function primaryStatus(p: Project): ProjectStatus {
-  return (p.variants ?? []).find((v) => v.is_primary)?.status ?? p.status;
-}
-
-// ============================================================
-// uploadedAt — what the "Uploaded" cell shows on a parent row.
-//
-// Same reasoning as primaryStatus above. uflow_projects.updated_at
-// is legacy: finalize-upload writes ONLY the targeted colourway's
-// row, so the product's own timestamp stops moving the moment
-// uploads start going through variants. The column was showing
-// the job's last product-level touch — often its creation date —
-// rather than when a file was last delivered.
-//
-// The parent row IS the original, so it takes the primary
-// variant's stamp; the colourway child rows already render their
-// own. Falls back to the product's column only when there are no
-// variant rows at all (pre-migration data), where it's the only
-// timestamp there is.
-// ============================================================
-function uploadedAt(p: Project): string {
-  return (
-    (p.variants ?? []).find((v) => v.is_primary)?.updated_at ?? p.updated_at
-  );
-}
 
 // ============================================================
 // Types
@@ -98,9 +52,10 @@ type Project = {
   // Reference images attached at job creation. Rendered as a
   // thumbnail strip in the Reference column.
   references?: ProjectReference[];
-  // Colourways. The parent row's status is derived from these;
-  // they render as indented child rows when expanded.
-  variants?: Variant[];
+  // Where this job sits in the hierarchy.
+  model_type?: ModelType | null;
+  parent_id?: string | null;
+  parent_name?: string | null;
 };
 
 type ProjectReference = {
@@ -108,18 +63,11 @@ type ProjectReference = {
   image_url: string;
 };
 
-type Variant = {
-  id: string;
-  name: string;
-  slug: string;
-  status: ProjectStatus;
-  revision_count: number;
-  glb_url: string | null;
-  approved_glb_url: string | null;
-  is_primary: boolean;
-  position: number;
-  updated_at: string;
-};
+// Colour for a child row's name and elbow in the grouped view.
+// Matches the Overview's CHILD_TEXT: a deliberate indigo, kept
+// out of the status palette so it can only ever mean "derived
+// from the row above" rather than a stage.
+const CHILD_TEXT = '#4c51bf';
 
 // ============================================================
 // ListJobsPage
@@ -153,6 +101,10 @@ export default function ListJobsPage({
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [query, setQuery] = useState('');
+  // Flat list vs grouped under each parent. A VIEW, not a filter:
+  // switching to 'parent' re-orders and indents but never hides a
+  // job, so the row count is the same either way.
+  const [grouping, setGrouping] = useState<'all' | 'parent'>('all');
 
   // Hard-delete (purge) state. `confirmTarget` is the row pending
   // confirmation; `deletingId` disables the dialog while the
@@ -189,17 +141,9 @@ export default function ListJobsPage({
     return () => window.removeEventListener('keydown', onKey);
   }, [lightbox]);
 
-  // Which products have their colourways expanded. Collapsed by
-  // default so this stays a one-row-per-product index.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  function toggleExpanded(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
+  // Which products have their colourways expanded.
+  // ---- removed 2026-08-29: colourways are their own jobs now,
+  // so every row is top-level and there is nothing to expand. ----
 
   // Calls the shared hard-delete endpoint, which wipes the job
   // from the DB and R2. On success we drop the row locally so the
@@ -265,10 +209,10 @@ export default function ListJobsPage({
     artist: (p) => p.assignee?.name ?? null,
     created: (p) => new Date(p.created_at),
     // Sorts on the same value the cell renders.
-    updated: (p) => new Date(uploadedAt(p)),
-    // The original's status, matching the Overview — the
-    // project's own column is stale once a colourway moves.
-    status: (p) => statusRank(primaryStatus(p)),
+    updated: (p) => new Date(p.updated_at),
+    status: (p) => statusRank(p.status),
+    // Groups parents together and children together.
+    type: (p) => p.model_type ?? 'parent',
     // Sort by how many references a job has, so jobs briefed
     // without any imagery can be surfaced in one click.
     references: (p) => p.references?.length ?? 0,
@@ -279,6 +223,63 @@ export default function ListJobsPage({
     // alphabetically. Unclassified rows sink to the bottom.
     complexity: (p) => complexityRank(p.complexity),
   });
+
+  // ------------------------------------------------------------
+  // Display rows
+  // ------------------------------------------------------------
+  // Same arrangement as the Overview. In 'parent' mode children
+  // move under the model they came from; a child whose parent is
+  // filtered out (by the search box or the brand switcher) still
+  // appears, under a header naming the absent parent, so the
+  // table never quietly drops a row the count promised.
+  type DisplayRow =
+    | { kind: 'job'; p: Project; indented: boolean }
+    | { kind: 'group'; label: string };
+
+  const displayRows: DisplayRow[] = useMemo(() => {
+    if (grouping !== 'parent') {
+      return sorted.map((p) => ({ kind: 'job' as const, p, indented: false }));
+    }
+
+    const childrenOf = new Map<string, Project[]>();
+    const topLevel: Project[] = [];
+    for (const p of sorted) {
+      if (p.model_type === 'child' && p.parent_id) {
+        const list = childrenOf.get(p.parent_id);
+        if (list) list.push(p);
+        else childrenOf.set(p.parent_id, [p]);
+      } else {
+        topLevel.push(p);
+      }
+    }
+
+    const rows: DisplayRow[] = [];
+    const placed = new Set<string>();
+    for (const parent of topLevel) {
+      rows.push({ kind: 'job', p: parent, indented: false });
+      for (const child of childrenOf.get(parent.id) ?? []) {
+        rows.push({ kind: 'job', p: child, indented: true });
+      }
+      placed.add(parent.id);
+    }
+
+    // Parent name comes from the UNFILTERED list — the whole point
+    // is that it isn't in `sorted`.
+    const lookup = new Map(projects.map((p) => [p.id, p.name] as const));
+    for (const [parentId, kids] of childrenOf) {
+      if (placed.has(parentId)) continue;
+      const name = lookup.get(parentId);
+      rows.push({
+        kind: 'group',
+        label: name ? `${name} — not in this list` : 'Parent removed',
+      });
+      for (const child of kids) {
+        rows.push({ kind: 'job', p: child, indented: true });
+      }
+    }
+
+    return rows;
+  }, [sorted, grouping, projects]);
 
   return (
     <div className="crm-shell">
@@ -310,6 +311,46 @@ export default function ListJobsPage({
             />
           </div>
 
+          {/* Grouping switch. Sits between the search box and the
+              table because it re-arranges whatever the search
+              left behind. */}
+          {visible.length > 0 && (
+            <div className="crm-tabs" role="tablist" aria-label="Grouping">
+              <button
+                role="tab"
+                aria-selected={grouping === 'all'}
+                className={`crm-tab ${grouping === 'all' ? 'is-active' : ''}`}
+                onClick={() => setGrouping('all')}
+                title="One row per job, in sort order"
+              >
+                All
+                <span className="crm-tab-count">{visible.length}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={grouping === 'parent'}
+                className={`crm-tab ${
+                  grouping === 'parent' ? 'is-active' : ''
+                }`}
+                onClick={() => setGrouping('parent')}
+                title="Group each child under the model it was derived from"
+              >
+                Parent
+                <span className="crm-tab-count">
+                  {
+                    new Set(
+                      visible.map((p) =>
+                        p.model_type === 'child' && p.parent_id
+                          ? p.parent_id
+                          : p.id
+                      )
+                    ).size
+                  }
+                </span>
+              </button>
+            </div>
+          )}
+
           {visible.length === 0 ? (
             <EmptyMini
               message={
@@ -323,6 +364,7 @@ export default function ListJobsPage({
               <thead>
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
+                  <SortableTh label="Type" sortKey="type" sort={sort} onSort={onSort} />
                   <SortableTh
                     label="Reference"
                     sortKey="references"
@@ -351,103 +393,78 @@ export default function ListJobsPage({
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((p) => (
-                  <Fragment key={p.id}>
-                  <tr>
-                    <td>
-                      {/* Disclosure toggle — only for products with
-                          colourways beyond the original, since the
-                          parent row already stands for that one. */}
-                      {hasExtraVariants(p.variants) ? (
-                        <button
-                          type="button"
-                          onClick={() => toggleExpanded(p.id)}
-                          aria-expanded={expanded.has(p.id)}
-                          aria-label={
-                            expanded.has(p.id)
-                              ? 'Hide variants'
-                              : 'Show variants'
-                          }
+                {displayRows.map((row) => {
+                  if (row.kind === 'group') {
+                    return (
+                      <tr key={`group-${row.label}`}>
+                        <td
+                          colSpan={10}
                           style={{
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
-                            cursor: 'pointer',
-                            font: 'inherit',
-                            color: 'inherit',
-                            display: 'flex',
-                            alignItems: 'baseline',
-                            gap: 6,
-                            textAlign: 'left',
+                            background: 'var(--surface-2, rgba(0,0,0,0.03))',
+                            color: 'var(--text-dim)',
+                            fontSize: 12,
+                            fontWeight: 600,
                           }}
                         >
-                          <span
-                            aria-hidden
+                          {row.label}
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const p = row.p;
+                  return (
+                  <tr key={p.id}>
+                    <td>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'baseline',
+                          gap: 6,
+                          textAlign: 'left',
+                          paddingLeft: row.indented ? 18 : 0,
+                        }}
+                      >
+                        <span
+                          aria-hidden
+                          style={{
+                            display: 'inline-block',
+                            width: 10,
+                            flex: 'none',
+                            color: row.indented
+                              ? CHILD_TEXT
+                              : 'var(--text-faint)',
+                          }}
+                        >
+                          {row.indented ? '└' : ''}
+                        </span>
+                        <span>
+                          <strong
                             style={{
-                              color: 'var(--text-faint)',
-                              fontSize: 10,
-                              display: 'inline-block',
-                              transform: expanded.has(p.id)
-                                ? 'rotate(90deg)'
-                                : 'none',
-                              transition: 'transform 0.12s',
+                              display: 'block',
+                              color: row.indented ? CHILD_TEXT : undefined,
                             }}
                           >
-                            ▶
-                          </span>
-                          <span>
-                            <strong style={{ display: 'block' }}>
-                              {p.name}
-                            </strong>
-                            <span
-                              style={{
-                                color: 'var(--text-faint)',
-                                fontSize: 12,
-                              }}
-                            >
-                              {p.slug} · +
-                              {extraVariants(p.variants).length} variant
-                              {extraVariants(p.variants).length === 1
-                                ? ''
-                                : 's'}
-                            </span>
-                          </span>
-                        </button>
-                      ) : (
-                        // Spacer stands in for the arrow so names
-                        // line up whether or not a product has
-                        // colourways.
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'baseline',
-                            gap: 6,
-                            textAlign: 'left',
-                          }}
-                        >
+                            {p.name}
+                          </strong>
                           <span
-                            aria-hidden
                             style={{
-                              display: 'inline-block',
-                              width: 10,
-                              flex: 'none',
+                              color: row.indented
+                                ? 'color-mix(in srgb, #4c51bf 55%, transparent)'
+                                : 'var(--text-faint)',
+                              fontSize: 12,
                             }}
-                          />
-                          <span>
-                            <strong style={{ display: 'block' }}>
-                              {p.name}
-                            </strong>
-                            <span
-                              style={{
-                                color: 'var(--text-faint)',
-                                fontSize: 12,
-                              }}
-                            >
-                              {p.slug}
-                            </span>
+                          >
+                            {p.slug}
                           </span>
-                        </div>
-                      )}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <TypeBadge
+                        modelType={p.model_type}
+                        parentId={p.parent_id}
+                        parentName={p.parent_name}
+                      />
                     </td>
                     <td>
                       <ReferenceThumbs
@@ -491,7 +508,7 @@ export default function ListJobsPage({
                       {new Date(p.created_at).toLocaleDateString()}
                     </td>
                     <td style={{ color: 'var(--text-dim)' }}>
-                      {new Date(uploadedAt(p)).toLocaleString(undefined, {
+                      {new Date(p.updated_at).toLocaleString(undefined, {
                         day: '2-digit',
                         month: '2-digit',
                         year: 'numeric',
@@ -505,7 +522,7 @@ export default function ListJobsPage({
                           (artist on it) vs YTA (no artist) — matches
                           the Overview dashboard's badge behaviour. */}
                       <StatusBadge
-                        status={primaryStatus(p)}
+                        status={p.status}
                         revisionCount={p.revision_count}
                         assigned={p.assigned_to !== null}
                       />
@@ -546,59 +563,8 @@ export default function ListJobsPage({
                       </div>
                     </td>
                   </tr>
-
-                  {/* Variant child rows, indented under their
-                      product. Edit/Delete stay on the parent —
-                      both act on the whole job. */}
-                  {expanded.has(p.id) &&
-                    extraVariants(p.variants).map((v) => (
-                      <tr
-                        key={v.id}
-                        style={{ background: 'var(--surface-2, transparent)' }}
-                      >
-                        <td style={{ paddingLeft: 28 }}>
-                          <span
-                            aria-hidden
-                            style={{
-                              color: 'var(--text-faint)',
-                              marginRight: 6,
-                            }}
-                          >
-                            └
-                          </span>
-                          <strong style={{ fontWeight: 600 }}>{v.name}</strong>
-                        </td>
-                        {/* Reference / Category / Complexity / Artist
-                            / Created all belong to the parent
-                            product, so the colourway rows leave them
-                            blank. */}
-                        <td />
-                        <td />
-                        <td />
-                        <td />
-                        <td />
-                        <td style={{ color: 'var(--text-dim)' }}>
-                          {new Date(v.updated_at).toLocaleString(undefined, {
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                            hour12: true,
-                          })}
-                        </td>
-                        <td>
-                          <StatusBadge
-                            status={v.status}
-                            revisionCount={v.revision_count}
-                            assigned
-                          />
-                        </td>
-                        <td />
-                      </tr>
-                    ))}
-                  </Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}

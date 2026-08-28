@@ -1,16 +1,13 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import JSZip from 'jszip';
 import StatusBadge from '../components/StatusBadge';
+import TypeBadge, { ModelType } from '../components/TypeBadge';
 import Sidebar from '../components/Sidebar';
 import { crmFetch, crmPath } from '../lib/client-fetch';
-import {
-  anyVariantIn,
-  allVariantsApproved,
-  sortVariants,
-} from '../lib/variant-status';
+import { useLiveRefresh } from '../lib/use-live-refresh';
 
 // ============================================================
 // Types — mirror the server's joined select shape
@@ -49,24 +46,25 @@ type Project = {
   // references join so the row can show a thumbnail without a
   // fetch per row. Null when the job has no references.
   thumb_url?: string | null;
-  // Colourways. Each is separately startable and uploadable, so
-  // they render as child rows carrying their own actions.
-  variants?: Variant[];
+  // Where this job sits in the hierarchy. A child is a model
+  // derived from another one — still a full job with its own
+  // brief, upload and QA cycle.
+  model_type?: ModelType | null;
+  parent_id?: string | null;
+  parent_name?: string | null;
 };
 
-type Variant = {
-  id: string;
-  name: string;
-  slug: string;
-  status: Project['status'];
-  revision_count: number;
-  feedback_seen_revision: number;
-  glb_url: string | null;
-  approved_glb_url: string | null;
-  is_primary: boolean;
-  position: number;
-  updated_at: string;
-};
+// ============================================================
+// Stage membership
+// ============================================================
+// Every job is one row with one status. Colourways used to be
+// sub-rows with their own statuses, so bucketing went through
+// anyVariantIn() and a row could legitimately appear in several
+// tabs at once. Since the 2026-08-29 promotion each colourway is
+// its own job, so this is a plain membership test again.
+function isIn(p: Project, statuses: Project['status'][]): boolean {
+  return statuses.includes(p.status);
+}
 
 type ReferenceImage = {
   id: string;
@@ -94,50 +92,6 @@ function hasUnreadFeedback(p: Project): boolean {
   return (p.revision_count ?? 0) > (p.feedback_seen_revision ?? 0);
 }
 
-// ============================================================
-// leadVariant
-//
-// The colourway a row LEADS WITH inside a given tab: the first
-// one in that tab's stage, falling back to the primary.
-//
-// Tabs are populated with anyVariantIn — a product shows up in
-// WIP because ANY colourway is in progress, and that colourway
-// is often not the original. Leading with the original then
-// names and badges something the tab isn't asking about, and
-// worse, the action button acts on it: you'd click Upload on a
-// WIP row and be asked for the original's zip.
-//
-// Outside a stage queue (My Jobs, Open Jobs, Approved) there's
-// nothing to match on, so the primary leads.
-//
-// Returns null when there are no variant rows at all
-// (pre-migration data); callers then fall back to the product's
-// own columns, which is exactly how those rows behaved before
-// colourways existed. Everywhere else uflow_projects.status is
-// legacy — only the single-model path writes it, so it goes
-// stale as soon as a colourway moves on its own.
-// ============================================================
-function leadVariant(
-  p: Project,
-  queueStatuses?: Project['status'][]
-): Variant | null {
-  const vs = sortVariants(p.variants ?? []) as Variant[];
-  if (vs.length === 0) return null;
-  const qs = queueStatuses ?? [];
-  return (
-    vs.find((v) => qs.includes(v.status)) ??
-    vs.find((v) => v.is_primary) ??
-    vs[0]
-  );
-}
-
-// A colourway's display name. The primary's stored name is a
-// backfill artefact — the variants migration inserted every
-// pre-existing project as a variant literally called 'Original'.
-// The primary variant IS the product, so show the product's name.
-function variantLabel(p: Project, v: Variant): string {
-  return v.is_primary ? p.name : v.name;
-}
 
 // ============================================================
 // ArtistDashboard
@@ -176,15 +130,10 @@ export default function ArtistDashboard({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>(initialProjects);
-  // Which product the upload modal is open for, and which
-  // colourway the artist clicked Upload on. The modal still shows
-  // its own picker — this only preselects it, so clicking Upload
-  // on the Grey child row doesn't open the modal aimed at the
-  // original.
-  const [uploadFor, setUploadFor] = useState<{
-    project: Project;
-    variantId: string | null;
-  } | null>(null);
+  // Which job the upload modal is open for. Every job is its own
+  // row with its own zip, so this is just the project — there is
+  // no longer a colourway to disambiguate within it.
+  const [uploadFor, setUploadFor] = useState<Project | null>(null);
   const [viewBrief, setViewBrief] = useState<Project | null>(null);
   // Per-project Start button state. We track which row is in flight
   // so concurrent clicks on different rows don't interfere; keyed by
@@ -214,31 +163,30 @@ export default function ArtistDashboard({
   // 'client_review' and 'eqa_rejected', since the row might come
   // back to the artist after admin triage).
   const activeProjects = useMemo(
-    () => projects.filter((p) => !allVariantsApproved(p)),
+    () => projects.filter((p) => p.status !== 'approved'),
     [projects]
   );
   const completedProjects = useMemo(
-    () => projects.filter((p) => allVariantsApproved(p)),
+    () => projects.filter((p) => p.status === 'approved'),
     [projects]
   );
-  // Queues use ANY-variant membership so a colourway needing work
-  // surfaces even when its siblings have moved on. A product can
-  // therefore appear in more than one tab — correct, since each
-  // tab is answering "is there work of this kind here?".
+  // One row, one status, one bucket. (Before the 2026-08-29
+  // promotion a product could appear in several tabs at once,
+  // because each of its colourways had its own status.)
   const ytsProjects = useMemo(
-    () => projects.filter((p) => anyVariantIn(p, ['draft'])),
+    () => projects.filter((p) => isIn(p, ['draft'])),
     [projects]
   );
   const wipProjects = useMemo(
     () =>
       projects.filter(
         (p) =>
-          anyVariantIn(p, ['wip', 'iqa_wip', 'eqa_wip']) ||
+          isIn(p, ['wip', 'iqa_wip', 'eqa_wip']) ||
           // Rejected rows whose feedback the artist has already
           // read but not yet Started. They've left the Rejected
           // inbox and can't sit in limbo — Start still renders
           // here. Admin keeps seeing them under Rejected.
-          (anyVariantIn(p, ['iqa_rejected', 'eqa_rejected']) &&
+          (isIn(p, ['iqa_rejected', 'eqa_rejected']) &&
             !hasUnreadFeedback(p))
       ),
     [projects]
@@ -248,19 +196,19 @@ export default function ArtistDashboard({
   const iqaRejectedProjects = useMemo(
     () =>
       projects.filter(
-        (p) => anyVariantIn(p, ['iqa_rejected']) && hasUnreadFeedback(p)
+        (p) => isIn(p, ['iqa_rejected']) && hasUnreadFeedback(p)
       ),
     [projects]
   );
   const eqaRejectedProjects = useMemo(
     () =>
       projects.filter(
-        (p) => anyVariantIn(p, ['eqa_rejected']) && hasUnreadFeedback(p)
+        (p) => isIn(p, ['eqa_rejected']) && hasUnreadFeedback(p)
       ),
     [projects]
   );
   const iqaProjects = useMemo(
-    () => projects.filter((p) => anyVariantIn(p, ['qa_pending'])),
+    () => projects.filter((p) => isIn(p, ['qa_pending'])),
     [projects]
   );
 
@@ -293,16 +241,43 @@ export default function ArtistDashboard({
       .then((r) => r.json())
       .then((d) => {
         if (d.projects) {
+          // Artists only receive their OWN jobs, so a child whose
+          // parent belongs to someone else won't resolve a name
+          // here. TypeBadge renders a bare "Child" pill in that
+          // case, which is the honest answer — the artist sees the
+          // model is derived without being shown a job that isn't
+          // theirs.
+          const parentNames = new Map<string, string>(
+            d.projects.map((p: { id: string; name: string }) => [
+              p.id,
+              p.name,
+            ])
+          );
           const norm = d.projects.map(
             (p: Project & { client: Project['client'] | Project['client'][] }) => ({
               ...p,
               client: Array.isArray(p.client) ? p.client[0] : p.client,
+              model_type: p.model_type ?? 'parent',
+              parent_id: p.parent_id ?? null,
+              parent_name: p.parent_id
+                ? parentNames.get(p.parent_id) ?? null
+                : null,
             })
           );
           setProjects(norm);
         }
       });
   }
+
+  // Keep the queue current without a manual reload. This matters
+  // most on the artist side: an admin's IQA decision is what moves
+  // a row into the Rejected inbox, and until now the artist had no
+  // way to learn that had happened short of reloading.
+  //
+  // Safe here because the dashboard holds no unsaved edits — the
+  // upload modal keeps its own file selection in its own state and
+  // is unaffected by the list underneath it changing.
+  useLiveRefresh(refreshList);
 
   async function startProject(p: Project) {
     if (starting[p.id]) return;
@@ -344,30 +319,8 @@ export default function ArtistDashboard({
 
   // Start a single colourway. Same endpoint as the product-level
   // Start, with variant_id so only that variant leaves its queue.
-  async function startVariant(p: Project, v: Variant) {
-    const key = `${p.id}:${v.id}`;
-    if (starting[key]) return;
-    setStarting((s) => ({ ...s, [key]: true }));
-    setStartErr(null);
-    try {
-      const res = await crmFetch(`/api/projects/${p.id}/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variant_id: v.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setStartErr(data.error || 'Could not start this variant.');
-        return;
-      }
-      refreshList();
-      router.refresh();
-    } catch (e) {
-      setStartErr((e as Error).message);
-    } finally {
-      setStarting((s) => ({ ...s, [key]: false }));
-    }
-  }
+  // ---- removed 2026-08-29: colourways are their own jobs, so
+  // startProject above is the only Start path. ----
 
   // ----- Title + subtitle per mode -----
   const pageTitle = isOverviewMode ? 'Overview' : isJobsMode ? 'Jobs' : 'My Jobs';
@@ -443,11 +396,8 @@ export default function ArtistDashboard({
                   initialTabHint={overviewTab}
                   starting={starting}
                   onStart={startProject}
-                  onStartVariant={startVariant}
                   onOpenBrief={(p) => setViewBrief(p)}
-                  onUpload={(p, variantId) =>
-                    setUploadFor({ project: p, variantId })
-                  }
+                  onUpload={(p) => setUploadFor(p)}
                 />
               </div>
             </>
@@ -464,9 +414,8 @@ export default function ArtistDashboard({
               initialTabHint={searchParams?.get('jobsTab')}
               starting={starting}
               onStart={startProject}
-              onStartVariant={startVariant}
               onOpenBrief={(p) => setViewBrief(p)}
-              onUpload={(p, variantId) => setUploadFor({ project: p, variantId })}
+              onUpload={(p) => setUploadFor(p)}
             />
           )}
 
@@ -484,11 +433,8 @@ export default function ArtistDashboard({
                 projects={activeProjects}
                 starting={starting}
                 onStart={startProject}
-                onStartVariant={startVariant}
                 onOpenBrief={(p) => setViewBrief(p)}
-                onUpload={(p, variantId) =>
-                  setUploadFor({ project: p, variantId })
-                }
+                onUpload={(p) => setUploadFor(p)}
               />
             )
           )}
@@ -497,8 +443,7 @@ export default function ArtistDashboard({
 
       {uploadFor && (
         <UploadModal
-          project={uploadFor.project}
-          initialVariantId={uploadFor.variantId}
+          project={uploadFor}
           onClose={() => setUploadFor(null)}
           onDone={() => {
             setUploadFor(null);
@@ -648,7 +593,6 @@ function JobsTabs({
   initialTabHint,
   starting,
   onStart,
-  onStartVariant,
   onOpenBrief,
   onUpload,
 }: {
@@ -664,9 +608,8 @@ function JobsTabs({
   initialTabHint: string | null | undefined;
   starting: Record<string, boolean>;
   onStart: (p: Project) => void;
-  onStartVariant: (p: Project, v: Variant) => void;
   onOpenBrief: (p: Project) => void;
-  onUpload: (p: Project, variantId: string | null) => void;
+  onUpload: (p: Project) => void;
 }) {
   // Recognised tab hints from the Overview deep-link. Anything
   // else (or no hint at all) falls through to the smart default.
@@ -771,35 +714,6 @@ function JobsTabs({
   })();
   const activeMeta = tabs.find((t) => t.key === tab)!;
 
-  // The stage this tab is a queue for. Passed down so each row
-  // leads with the colourway that put the product in THIS tab,
-  // rather than always leading with the primary — otherwise the
-  // WIP tab headlines a colourway sitting in IQA and buries the
-  // actual in-progress work in a collapsed child row.
-  //
-  // The WIP bucket also carries rejected rows whose feedback has
-  // been read (they've left the Rejected inbox but haven't been
-  // Started yet), so those statuses count as WIP-stage here too.
-  //
-  // Open Jobs is a rollup, not a stage, so it stays undefined and
-  // keeps the primary-leads behaviour.
-  const queueStatuses: Project['status'][] | undefined = (() => {
-    switch (tab) {
-      case 'yts':
-        return ['draft'];
-      case 'wip':
-        return ['wip', 'iqa_wip', 'eqa_wip', 'iqa_rejected', 'eqa_rejected'];
-      case 'iqa':
-        return ['qa_pending'];
-      case 'iqa_rejected':
-        return ['iqa_rejected'];
-      case 'eqa_rejected':
-        return ['eqa_rejected'];
-      default:
-        return undefined;
-    }
-  })();
-
   return (
     <>
       {/* Tab bar — same classes the admin Overview uses so the
@@ -842,10 +756,8 @@ function JobsTabs({
           projects={activeBucket}
           starting={starting}
           onStart={onStart}
-          onStartVariant={onStartVariant}
           onOpenBrief={onOpenBrief}
           onUpload={onUpload}
-          queueStatuses={queueStatuses}
         />
       )}
     </>
@@ -860,33 +772,15 @@ function ActiveJobsTable({
   projects,
   starting,
   onStart,
-  onStartVariant,
   onOpenBrief,
   onUpload,
-  queueStatuses,
 }: {
   projects: Project[];
   starting: Record<string, boolean>;
   onStart: (p: Project) => void;
-  onStartVariant: (p: Project, v: Variant) => void;
   onOpenBrief: (p: Project) => void;
-  onUpload: (p: Project, variantId: string | null) => void;
-  // The stage this table is a queue for. Decides which colourway
-  // each row leads with. Omitted on My Jobs / Open Jobs, which
-  // aren't stage queues — those lead with the primary.
-  queueStatuses?: Project['status'][];
+  onUpload: (p: Project) => void;
 }) {
-  // Which products have their colourways expanded.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  function toggleExpanded(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   return (
     <table className="crm-table">
       <thead>
@@ -895,6 +789,7 @@ function ActiveJobsTable({
               artist view — artists shouldn't see which
               client commissioned a job. */}
           <th style={{ width: '26%' }}>Project</th>
+          <th>Type</th>
           <th>Brief</th>
           <th>Reference</th>
           <th>Revision Round</th>
@@ -905,102 +800,40 @@ function ActiveJobsTable({
       </thead>
       <tbody>
         {projects.map((p) => {
-          // The colourway this row leads with — the one that put
-          // the product in this tab. Its name, status, revision
-          // and ACTION are what the collapsed row shows, so Start
-          // and Upload act on the work the tab is asking about.
-          const lead = leadVariant(p, queueStatuses);
-          const rowStatus = lead?.status ?? p.status;
-          const leadName = lead ? variantLabel(p, lead) : p.name;
-          const rowRev = lead ? lead.revision_count : p.revision_count;
-          const allVariants = sortVariants(p.variants ?? []) as Variant[];
-          // Everything the lead row isn't — including the primary
-          // when a colourway is leading.
-          const rest = allVariants.filter((v) => v.id !== lead?.id);
-          const canExpand = rest.length > 0;
-          // Start acts on the lead specifically when variant rows
-          // exist, so one colourway can move while its siblings
-          // stay untouched. No variants = the legacy product path.
-          const startLead = () =>
-            lead ? onStartVariant(p, lead) : onStart(p);
-          const startKey = lead ? `${p.id}:${lead.id}` : p.id;
+          // One job, one row, one status. No lead-colourway
+          // resolution: the row IS the thing being worked on.
+          const rowStatus = p.status;
+          const rowRev = p.revision_count;
 
           return (
-          <Fragment key={p.id}>
-          <tr>
+          <tr key={p.id}>
             <td>
-              {canExpand ? (
-                <button
-                  type="button"
-                  onClick={() => toggleExpanded(p.id)}
-                  aria-expanded={expanded.has(p.id)}
-                  aria-label={
-                    expanded.has(p.id) ? 'Hide colourways' : 'Show colourways'
-                  }
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    font: 'inherit',
-                    color: 'inherit',
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 6,
-                    textAlign: 'left',
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    style={{
-                      color: 'var(--text-faint)',
-                      fontSize: 10,
-                      display: 'inline-block',
-                      transform: expanded.has(p.id)
-                        ? 'rotate(90deg)'
-                        : 'none',
-                      transition: 'transform 0.12s',
-                    }}
-                  >
-                    ▶
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 6,
+                  textAlign: 'left',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{ display: 'inline-block', width: 10, flex: 'none' }}
+                />
+                <span>
+                  <strong style={{ display: 'block' }}>{p.name}</strong>
+                  <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+                    {p.slug}
                   </span>
-                  <span>
-                    <strong style={{ display: 'block' }}>{leadName}</strong>
-                    <span
-                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
-                    >
-                      {p.slug} · {allVariants.length} colourways
-                    </span>
-                  </span>
-                </button>
-              ) : (
-                // No variants: same flex layout, with a spacer
-                // standing in for the arrow. Without it these
-                // rows inherit the table's centred alignment AND
-                // sit ~16px left of the expandable ones, so the
-                // model names wouldn't line up down the column.
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 6,
-                    textAlign: 'left',
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    style={{ display: 'inline-block', width: 10, flex: 'none' }}
-                  />
-                  <span>
-                    <strong style={{ display: 'block' }}>{leadName}</strong>
-                    <span
-                      style={{ color: 'var(--text-faint)', fontSize: 12 }}
-                    >
-                      {p.slug}
-                    </span>
-                  </span>
-                </div>
-              )}
+                </span>
+              </div>
+            </td>
+            <td>
+              <TypeBadge
+                modelType={p.model_type}
+                parentId={p.parent_id}
+                parentName={p.parent_name}
+              />
             </td>
             <td>
               <a
@@ -1066,10 +899,10 @@ function ActiveJobsTable({
                 rowStatus === 'eqa_rejected') && (
                 <button
                   className="crm-btn"
-                  onClick={startLead}
-                  disabled={!!starting[startKey]}
+                  onClick={() => onStart(p)}
+                  disabled={!!starting[p.id]}
                 >
-                  {starting[startKey] ? 'Starting…' : 'Start'}
+                  {starting[p.id] ? 'Starting…' : 'Start'}
                 </button>
               )}
               {rowStatus === 'qa_pending' && (
@@ -1080,10 +913,7 @@ function ActiveJobsTable({
               {(rowStatus === 'wip' ||
                 rowStatus === 'iqa_wip' ||
                 rowStatus === 'eqa_wip') && (
-                <button
-                  className="crm-btn"
-                  onClick={() => onUpload(p, lead?.id ?? null)}
-                >
+                <button className="crm-btn" onClick={() => onUpload(p)}>
                   {rowRev === 0 ? 'Upload zip' : 'Re-upload'}
                 </button>
               )}
@@ -1099,92 +929,6 @@ function ActiveJobsTable({
               )}
             </td>
           </tr>
-
-          {/* ---- Variant child rows ----
-              Each colourway is its own piece of work: its own
-              Start, its own zip. Upload opens the shared modal,
-              which carries its own variant chooser, so there's no
-              second upload path to keep in sync. */}
-          {expanded.has(p.id) &&
-            rest.map((v) => {
-              const key = `${p.id}:${v.id}`;
-              return (
-                <tr
-                  key={v.id}
-                  style={{ background: 'var(--surface-2, transparent)' }}
-                >
-                  <td style={{ paddingLeft: 28 }}>
-                    <span
-                      aria-hidden
-                      style={{
-                        color: 'var(--text-faint)',
-                        marginRight: 6,
-                      }}
-                    >
-                      └
-                    </span>
-                    <strong style={{ fontWeight: 600 }}>
-                      {variantLabel(p, v)}
-                    </strong>
-                  </td>
-                  {/* Brief and references belong to the product,
-                      not the colourway — use the parent's links. */}
-                  <td />
-                  <td />
-                  <td style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-                    {v.revision_count === 0 ? '\u2014' : v.revision_count}
-                  </td>
-                  <td>
-                    <StatusBadge
-                      status={v.status}
-                      revisionCount={v.revision_count}
-                      assigned
-                    />
-                  </td>
-                  <td style={{ color: 'var(--text-dim)' }}>
-                    {new Date(v.updated_at).toLocaleDateString()}
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    {(v.status === 'draft' ||
-                      v.status === 'iqa_rejected' ||
-                      v.status === 'eqa_rejected') && (
-                      <button
-                        className="crm-btn"
-                        onClick={() => onStartVariant(p, v)}
-                        disabled={!!starting[key]}
-                      >
-                        {starting[key] ? 'Starting…' : 'Start'}
-                      </button>
-                    )}
-                    {(v.status === 'wip' ||
-                      v.status === 'iqa_wip' ||
-                      v.status === 'eqa_wip') && (
-                      <button
-                        className="crm-btn"
-                        onClick={() => onUpload(p, v.id)}
-                      >
-                        {v.revision_count === 0 ? 'Upload zip' : 'Re-upload'}
-                      </button>
-                    )}
-                    {v.status === 'qa_pending' && (
-                      <span
-                        style={{ color: 'var(--text-dim)', fontSize: 13 }}
-                      >
-                        Awaiting QA review
-                      </span>
-                    )}
-                    {v.status === 'client_review' && (
-                      <span
-                        style={{ color: 'var(--text-dim)', fontSize: 13 }}
-                      >
-                        With client
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </Fragment>
           );
         })}
       </tbody>
@@ -1273,6 +1017,7 @@ function CompletedJobsTable({
       <thead>
         <tr>
           <th style={{ width: '32%' }}>Project</th>
+          <th>Type</th>
           <th>Brief</th>
           <th>Reference</th>
           <th>Revisions</th>
@@ -1289,6 +1034,13 @@ function CompletedJobsTable({
               <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
                 {p.slug}
               </span>
+            </td>
+            <td>
+              <TypeBadge
+                modelType={p.model_type}
+                parentId={p.parent_id}
+                parentName={p.parent_name}
+              />
             </td>
             <td>
               <a
@@ -1543,14 +1295,10 @@ const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 // ============================================================
 function UploadModal({
   project,
-  initialVariantId,
   onClose,
   onDone,
 }: {
   project: Project;
-  // The colourway the artist clicked Upload on, so the picker
-  // opens on it. Null falls back to the first open variant.
-  initialVariantId?: string | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -1562,84 +1310,27 @@ function UploadModal({
   const [stage, setStage] = useState<'idle' | 'checking' | 'signing' | 'uploading' | 'finalizing'>('idle');
   const [, startTransition] = useTransition();
 
-  // ---- Variant targeting ----
-  // A product may have several colourways, each with its own zip
-  // and its own QA cycle. The artist picks which one this upload
-  // is for; with a single variant (the common case) we select it
-  // automatically and hide the chooser entirely.
-  type UploadVariant = {
-    id: string;
-    name: string;
-    slug: string;
-    status: string;
-    is_primary: boolean;
-  };
-  // Seeded from the project the dashboard already loaded, so the
-  // chooser is present on first paint. It used to fetch on mount,
-  // which meant a visible delay before the control appeared and a
-  // layout shift once it did — the data was already in memory.
+  // ---- Upload target ----
+  // The job itself. There is no chooser: colourways used to be
+  // sub-rows sharing one product, so the modal had to ask which
+  // one a zip was for. Since the 2026-08-29 promotion each
+  // colourway is its own job with its own row and its own Upload
+  // button, so the target is unambiguous by the time we get here.
+
+  // Expected filename stem for this upload: the job's own slug.
   //
-  // Approved colourways are excluded: they're finished, and the
-  // upload endpoints would reject them.
-  const openVariants = (project.variants ?? []).filter(
-    (v) => v.status !== 'approved'
-  );
-  const [variants, setVariants] = useState<UploadVariant[] | null>(
-    openVariants
-  );
-  // Preselect the colourway the artist clicked, when it's still
-  // open. Falls back to the first open one — which is what the
-  // My Jobs / Jobs tables pass for a product-level Upload.
-  const [variantId, setVariantId] = useState<string | null>(
-    (initialVariantId &&
-      openVariants.some((v) => v.id === initialVariantId) &&
-      initialVariantId) ||
-      openVariants[0]?.id ||
-      null
-  );
-
-  useEffect(() => {
-    // Background refresh only. The seed above covers the render;
-    // this catches a colourway added by an admin since the page
-    // was last loaded. Never sets state back to null, so it can't
-    // make the chooser disappear mid-session.
-    let cancelled = false;
-    crmFetch(`/api/projects/${project.id}/variants`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled) return;
-        const list: UploadVariant[] = d.variants ?? [];
-        const open = list.filter((v) => v.status !== 'approved');
-        if (open.length === 0) return;
-        setVariants(open);
-        // Keep the artist's current selection if it still exists,
-        // so a refresh landing mid-interaction doesn't silently
-        // retarget the upload.
-        setVariantId((prev) =>
-          prev && open.some((v) => v.id === prev) ? prev : open[0].id
-        );
-      })
-      .catch(() => {
-        // Seeded data stands; nothing to do.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id]);
-
-  const selectedVariant =
-    variants?.find((v) => v.id === variantId) ?? null;
-
-  // Expected filename stem for this upload. Non-primary variants
-  // get their own namespace so a product's colourways don't all
-  // ship files with identical names:
-  //   primary → smart.zip   / smart.glb
-  //   "grey"  → smart-grey.zip / smart-grey.glb
-  const productBase = project.slug.split('-')[0].toLowerCase();
-  const assetBase =
-    selectedVariant && !selectedVariant.is_primary
-      ? `${productBase}-${selectedVariant.slug}`
-      : productBase;
+  // This used to be `project.slug.split('-')[0]` plus the variant
+  // slug, because a colourway needed its own namespace carved out
+  // of its parent's slug ("smart" + "grey" -> "smart-grey"). That
+  // only ever produced the right answer for single-word slugs:
+  // "model-45" collapsed to "model", so the artist was told to
+  // name the zip "model.zip" while the server wrote assets under
+  // "model-45/", and the upload was blocked by its own
+  // client-side check.
+  //
+  // The stem is now just the slug, which is exactly what
+  // upload-sign and finalize-upload use server-side.
+  const assetBase = project.slug.toLowerCase();
 
   // Validate a chosen file before accepting it: must be a .zip and
   // within the size cap. Rejections surface inline (via setErr) so
@@ -1669,10 +1360,8 @@ function UploadModal({
   // tolerant, case-insensitive); textures inside fbx/ are not
   // name-checked since their filenames legitimately vary.
   async function validateZipStructure(f: File): Promise<string | null> {
-    // Filename stem for this upload target. For a colourway this
-    // is "<product>-<variant>" so Black and Grey don't both ship
-    // files called smart.glb — they'd be indistinguishable once
-    // downloaded, and would collide in the same R2 folder.
+    // Filename stem for this upload target — the job's own slug,
+    // matching the prefix the server writes assets under.
     const product = assetBase;
 
     // 1. Outer zip filename.
@@ -1758,11 +1447,7 @@ function UploadModal({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // Tells the server which colourway this zip belongs to
-          // so the assets land in that variant's namespace and
-          // the status flips on the variant row, not the product.
-          // Null falls back to the legacy single-model path.
-          body: JSON.stringify({ variant_id: variantId }),
+          body: JSON.stringify({}),
         }
       );
       const signData = await signRes.json();
@@ -1793,7 +1478,6 @@ function UploadModal({
           body: JSON.stringify({
             zip_url: zipUrl,
             revision: signData.revision,
-            variant_id: variantId,
           }),
         }
       );
@@ -1831,62 +1515,6 @@ function UploadModal({
           </div>
           <button className="crm-modal-close" onClick={onClose}>×</button>
         </div>
-
-        {/* Upload target. Always shown once variants are known,
-            even with a single option — the artist needs to see
-            WHICH colourway they're submitting, and the expected
-            filename below changes with it. A lone variant renders
-            as a read-only line rather than a pointless dropdown. */}
-        {variants && variants.length > 0 && (
-          <div className="crm-form-group" style={{ marginBottom: 4 }}>
-            <label className="crm-label">Uploading for</label>
-            {variants.length === 1 ? (
-              <p
-                style={{
-                  margin: 0,
-                  fontSize: 14,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-              >
-                <strong>
-                  {variants[0].is_primary ? project.name : variants[0].name}
-                </strong>
-                <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
-                  {variants[0].is_primary
-                    ? 'the original — add a variant from the admin job row to submit a colourway'
-                    : 'variant'}
-                </span>
-              </p>
-            ) : (
-              <select
-                className="crm-input"
-                value={variantId ?? ''}
-                disabled={busy}
-                onChange={(e) => {
-                  setVariantId(e.target.value);
-                  // The expected filename changes with the target,
-                  // so a file picked for the previous variant is no
-                  // longer valid. Clear it rather than let the
-                  // artist submit and hit a confusing name error.
-                  setFile(null);
-                  setErr(null);
-                }}
-              >
-                {variants.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {/* The primary variant is the product itself,
-                        so show the product's name rather than the
-                        placeholder 'Original' the migration
-                        backfilled. */}
-                    {v.is_primary ? project.name : v.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        )}
 
         <div
           className={`crm-dropzone ${drag ? 'is-drag' : ''}`}

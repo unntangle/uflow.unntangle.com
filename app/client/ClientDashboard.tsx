@@ -10,6 +10,7 @@ import {
   SortableTh,
   statusRank,
 } from '../lib/use-table-sort';
+import { useLiveRefresh } from '../lib/use-live-refresh';
 import {
   anyVariantIn,
   allVariantsApproved,
@@ -200,6 +201,51 @@ export default function ClientDashboard({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>(initialProjects);
+
+  // ----- Live refresh -----
+  // The client's queue moves without them doing anything: EQA
+  // rows appear when admin forwards a model for sign-off, and
+  // that was previously invisible until a manual reload.
+  //
+  // /api/client/projects is used rather than /api/projects
+  // because it already does the client-scoped work this view
+  // depends on — brand filtering plus the EQA-only revision
+  // count derived from uflow_client_feedback_images. The generic
+  // endpoint returns the raw revision_count, which mixes internal
+  // IQA rounds into the number and would show the client the
+  // admin/artist back-and-forth they're deliberately never shown.
+  //
+  // The endpoint already returns rows in sortByLatest order, so
+  // nothing is re-sorted here.
+  function refreshProjects() {
+    crmFetch('/api/client/projects')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.projects) return;
+        const norm = d.projects.map(
+          (
+            p: Project & {
+              client: Project['client'] | Project['client'][];
+              assignee: Project['assignee'] | Project['assignee'][];
+            }
+          ) => ({
+            ...p,
+            client: Array.isArray(p.client) ? p.client[0] : p.client,
+            assignee: Array.isArray(p.assignee) ? p.assignee[0] : p.assignee,
+          })
+        );
+        setProjects(norm);
+      })
+      .catch(() => {
+        // A dropped poll is not worth surfacing — the next one is
+        // 20 seconds away and the list on screen is still valid.
+      });
+  }
+
+  // Safe here: the dashboard holds no unsaved edits. The delete
+  // modal keeps its own copy of the row it targets, so a refresh
+  // landing mid-confirmation can't retarget it at a different job.
+  useLiveRefresh(refreshProjects);
 
   // ----- Delete-confirmation modal state -----
   // Lives at the dashboard level (not per-row) so the modal can
