@@ -63,17 +63,11 @@ export default async function Page({
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
 
-  // Determine the data source. Admins can override; everyone
-  // else is locked to their role's natural source.
-  let source: 'admin' | 'client';
-  if (user.role === 'admin') {
-    source = sp.source === 'client' ? 'client' : 'admin';
-  } else if (user.role === 'client') {
-    source = 'client';
-  } else {
-    // 3d_artist (or anything else falling back to artist role)
-    source = 'admin';
-  }
+  // Explicit ?source= from the URL, if it names something real.
+  // Resolved into an actual source AFTER the project loads,
+  // because the sensible default depends on the row's status.
+  const requestedSource: 'admin' | 'client' | null =
+    sp.source === 'client' ? 'client' : sp.source === 'admin' ? 'admin' : null;
 
   // ----- Load the project + verify access -----
   const { data: project } = await supabase()
@@ -94,6 +88,30 @@ export default async function Page({
     if (!user.clientId || project.client_id !== user.clientId) notFound();
   }
   // Admin: no extra check.
+
+  // ----- Resolve the data source -----
+  // A client only ever has one source: their own screenshots.
+  //
+  // Admin and ARTIST can read both. The artist used to be hard-
+  // locked to 'admin', which meant the client's EQA screenshots
+  // were literally unreachable for the person who has to act on
+  // them: admin's only handle on an eqa_rejected row is to tell
+  // the artist verbally what the client marked up. A rejection
+  // the artist can't see is a rejection that doesn't get fixed.
+  //
+  // The default follows the row's own state, so the link in a
+  // dashboard lands on the feedback that actually put the job
+  // where it is:
+  //   eqa_rejected / eqa_wip -> the client's screenshots
+  //   everything else        -> admin's IQA screenshots
+  // An explicit ?source= always wins, so either side stays
+  // reachable from both roles.
+  const defaultSource: 'admin' | 'client' =
+    project.status === 'eqa_rejected' || project.status === 'eqa_wip'
+      ? 'client'
+      : 'admin';
+  const source: 'admin' | 'client' =
+    user.role === 'client' ? 'client' : requestedSource ?? defaultSource;
 
   // ----- Mark the feedback as seen (artist only) -----
   // This is the "artist has read the feedback" acknowledgement.

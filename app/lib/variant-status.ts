@@ -131,6 +131,69 @@ export function allVariantsApproved(p: ProductLike): boolean {
   return rollupStatus(p) === 'approved';
 }
 
+// ============================================================
+// clientFacingStatus
+// ============================================================
+// The ONE definition of what a job reads as on the client side.
+// The client never sees the internal pipeline: everything the
+// admin and artist are doing rolls up to "Open", and only the
+// three states the client themselves participates in get their
+// own label.
+//
+// Lives here rather than in either dashboard because it is used
+// by BOTH the Overview (tab buckets, status pill, CSV export)
+// and the List Jobs index, and those two silently disagreeing
+// about where a job belongs is exactly the class of bug this
+// module exists to prevent.
+//
+// ------------------------------------------------------------
+// WHY THERE IS NO has_client_rejection FALLBACK HERE
+// ------------------------------------------------------------
+// Both dashboards used to add `|| p.has_client_rejection` to the
+// EQA Rejected test, on the reasoning that a job the client had
+// pushed back on stays theirs to watch. In practice that flag is
+// set by the mere EXISTENCE of a row in
+// uflow_client_feedback_images, so it is true forever once the
+// client has rejected even once, and it is never cleared.
+//
+// The three states it could still influence are precisely the
+// ones where the work has MOVED ON — the artist picked the
+// feedback up (eqa_wip), re-uploaded (qa_pending), or admin
+// re-triaged it (iqa_rejected). 'approved', 'client_review' and
+// 'eqa_rejected' are all decided above it. So the flag could only
+// ever mislabel a job that was actively being fixed, pinning it
+// under EQA Rejected and taking it out of Open Jobs for the rest
+// of its life.
+//
+// The honest answer is the row's actual state. A job the client
+// rejected and that is now being reworked is Open; their own
+// rejection history is still one click away in the Revision Round
+// column, which reads client_revision_count and is unaffected.
+export type ClientFacingStatus =
+  | 'Approved'
+  | 'EQA'
+  | 'EQA Rejected'
+  | 'Open';
+
+export function clientFacingStatus(p: ProductLike): ClientFacingStatus {
+  // Order matters: it is what the client most needs to know
+  // first. Finished, then actionable, then pushed back, then
+  // everything still internal.
+  if (allVariantsApproved(p)) return 'Approved';
+  if (anyVariantIn(p, ['client_review'])) return 'EQA';
+  if (anyVariantIn(p, ['eqa_rejected'])) return 'EQA Rejected';
+  return 'Open';
+}
+
+// Sort rank for the client-facing Status column. Kept next to the
+// labels so a new label can't be added without a rank.
+export const CLIENT_STATUS_ORDER: Record<ClientFacingStatus, number> = {
+  Open: 0,
+  EQA: 1,
+  'EQA Rejected': 2,
+  Approved: 3,
+};
+
 // Colourways excluding the primary. The parent row already stands
 // for the primary, so this is what a disclosure toggle should
 // count and what child rows should list — a product carrying only

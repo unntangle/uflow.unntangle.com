@@ -5,7 +5,10 @@ import { Trash2 } from 'lucide-react';
 import Sidebar from '../../../components/Sidebar';
 import { crmPath, crmFetch } from '../../../lib/client-fetch';
 import { useTableSort, SortableTh } from '../../../lib/use-table-sort';
-import { anyVariantIn, allVariantsApproved } from '../../../lib/variant-status';
+import {
+  clientFacingStatus,
+  CLIENT_STATUS_ORDER,
+} from '../../../lib/variant-status';
 
 // ============================================================
 // Types
@@ -148,17 +151,16 @@ export default function ListClientJobsPage({
   // Per-column sort. Status sorts by the client-facing label rank
   // (Open -> EQA -> EQA Rejected -> Approved); Revision Round by
   // the client-scoped count; the rest by name / date.
-  const statusOrder: Record<string, number> = {
-    Open: 0,
-    EQA: 1,
-    'EQA Rejected': 2,
-    Approved: 3,
-  };
   const { sorted, sort, onSort } = useTableSort(visible, {
     name: (p) => p.name,
     revision: (p) => p.client_revision_count ?? 0,
     created: (p) => new Date(p.created_at),
-    status: (p) => statusOrder[clientStatusLabel(p)] ?? 99,
+    // Rank comes from the same module as the label, so a new
+    // label can't be added without a sort position.
+    status: (p) =>
+      CLIENT_STATUS_ORDER[
+        clientStatusLabel(p) as keyof typeof CLIENT_STATUS_ORDER
+      ] ?? 99,
   });
 
   return (
@@ -388,16 +390,14 @@ export default function ListClientJobsPage({
 // Overview dashboard so a job reads the same on both screens.
 // ============================================================
 function clientStatusLabel(p: Project): string {
-  // Colourway-aware, matching ClientDashboard exactly. Reading
-  // p.status directly would report "Open" for a job whose model
-  // is actually sitting in the client's own EQA queue, because
-  // the product row isn't written on the variant path.
-  if (allVariantsApproved(p)) return 'Approved';
-  if (anyVariantIn(p, ['client_review'])) return 'EQA';
-  if (anyVariantIn(p, ['eqa_rejected']) || p.has_client_rejection) {
-    return 'EQA Rejected';
-  }
-  return 'Open';
+  // Delegates to lib/variant-status so this page and the Overview
+  // dashboard cannot drift. It used to reimplement the rule here,
+  // and the copy kept `|| p.has_client_rejection` after the
+  // dashboard had dropped it — so the same job read "Open" on one
+  // screen and "EQA Rejected" on the other. That flag is true
+  // forever once the client has rejected once, which pinned every
+  // previously-rejected job under EQA Rejected for good.
+  return clientFacingStatus(p);
 }
 
 function ClientStatusPill({ label }: { label: string }) {

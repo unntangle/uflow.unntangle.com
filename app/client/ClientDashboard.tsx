@@ -12,8 +12,8 @@ import {
 } from '../lib/use-table-sort';
 import { useLiveRefresh } from '../lib/use-live-refresh';
 import {
-  anyVariantIn,
-  allVariantsApproved,
+  clientFacingStatus,
+  CLIENT_STATUS_ORDER,
   rollupStatus,
 } from '../lib/variant-status';
 
@@ -110,30 +110,32 @@ type Brand = { id: string; slug: string; name: string };
 // Both helpers fall back to the product's own status column when
 // a job has no variant rows at all (pre-migration data), so
 // nothing regresses for legacy jobs.
+// Every bucket below is derived from ONE label so the four tabs
+// stay a true partition — a row can't be counted twice or fall
+// through every test and vanish. clientFacingStatus lives in
+// lib/variant-status.ts and is shared with the List Jobs index.
+//
+// It replaced a set of independent predicates, one of which
+// (`inEqaRejected`) OR'd in `has_client_rejection` — a flag that
+// is true forever once the client has rejected once. That pinned
+// every previously-rejected job under EQA Rejected even after the
+// artist had picked the feedback up, so it never came back to
+// Open Jobs. See the note on clientFacingStatus for the full
+// reasoning.
+function clientStatusLabel(p: Project): string {
+  return clientFacingStatus(p);
+}
+
 function inEqa(p: Project): boolean {
-  return anyVariantIn(p, ['client_review']);
+  return clientFacingStatus(p) === 'EQA';
 }
 
 function isApproved(p: Project): boolean {
-  return allVariantsApproved(p);
+  return clientFacingStatus(p) === 'Approved';
 }
 
-// Rejected by the client. `has_client_rejection` keeps a job in
-// this bucket even after it's been re-routed, until it's finally
-// approved — from the client's POV a job they pushed back on is
-// still theirs to watch.
 function inEqaRejected(p: Project): boolean {
-  return anyVariantIn(p, ['eqa_rejected']) || !!p.has_client_rejection;
-}
-
-// The single client-facing label for a row. Ordered by what the
-// client most needs to know: finished, then actionable, then
-// pushed back, then everything still internal.
-function clientStatusLabel(p: Project): string {
-  if (isApproved(p)) return 'Approved';
-  if (inEqa(p)) return 'EQA';
-  if (inEqaRejected(p)) return 'EQA Rejected';
-  return 'Open';
+  return clientFacingStatus(p) === 'EQA Rejected';
 }
 
 // Is there a model to look at? The product's own glb_url is only
@@ -797,13 +799,9 @@ function ProjectTable({
   // sortable data. Cycles asc -> desc -> off.
   const clientStatusRank = (p: Project): number => {
     const label = forceStatusLabel ?? clientStatusLabel(p);
-    const order: Record<string, number> = {
-      Open: 0,
-      EQA: 1,
-      'EQA Rejected': 2,
-      Approved: 3,
-    };
-    return order[label] ?? 99;
+    return (
+      CLIENT_STATUS_ORDER[label as keyof typeof CLIENT_STATUS_ORDER] ?? 99
+    );
   };
   const { sorted, sort, onSort } = useTableSort(projects, {
     name: (p) => p.name,

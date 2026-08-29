@@ -1256,8 +1256,16 @@ function ProjectTable({
                       //                 artist; relevant on iqa_rejected
                       //                 and historical on qa_pending /
                       //                 client_review / approved rows)
+                      // eqa_wip is included alongside eqa_rejected:
+                      // the row is the SAME rejection, just picked
+                      // up by the artist. Dropping back to the
+                      // admin source the moment they hit Start meant
+                      // this link changed what it showed halfway
+                      // through the round.
                       `/projects/${p.id}/feedback?revision=${rev}${
-                        p.status === 'eqa_rejected' ? '&source=client' : ''
+                        p.status === 'eqa_rejected' || p.status === 'eqa_wip'
+                          ? '&source=client'
+                          : ''
                       }`
                     )}
                     target="_blank"

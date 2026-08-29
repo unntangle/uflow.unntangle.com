@@ -101,7 +101,7 @@ export async function POST(
   const { data: project } = await supabase()
     .from('uflow_projects')
     .select(
-      'slug, status, revision_count, client_id, client:uflow_clients(slug)'
+      'slug, name, status, revision_count, glb_url, client_id, client:uflow_clients(slug)'
     )
     .eq('id', id)
     .maybeSingle();
@@ -125,7 +125,7 @@ export async function POST(
   // awaiting this client's decision?
   const { data: variants } = await supabase()
     .from('uflow_project_variants')
-    .select('id, status, revision_count')
+    .select('id, status, revision_count, glb_url')
     .eq('project_id', id);
 
   const reviewable = (variants ?? []).filter(
@@ -136,6 +136,54 @@ export async function POST(
     return NextResponse.json(
       {
         error: `Cannot sign client-feedback uploads — nothing on "${project.slug}" is awaiting your review.`,
+      },
+      { status: 400 }
+    );
+  }
+
+  // ----- Asset check: EVERY guard client-review will apply -----
+  // This endpoint hands out presigned PUT URLs, and the browser
+  // uploads to R2 the moment it gets them — BEFORE the decision
+  // is posted to /client-review. So any guard that lives only in
+  // that route runs too late: the files are already in the bucket
+  // when it returns 400, and because no DB rows are written they
+  // are unreachable from every screen afterwards. That is exactly
+  // how a batch of client screenshots was uploaded, refused, and
+  // silently lost.
+  //
+  // The rule is now: this endpoint must refuse anything
+  // /client-review would refuse. The GLB check is the one that
+  // was missing — since the variants migration uploads wrote
+  // glb_url onto the colourway and left the product's own column
+  // null, so a legacy-path target could pass the status check and
+  // still have nothing to review.
+  const someTargetHasNoModel =
+    reviewable.length > 0
+      ? reviewable.some((v) => !v.glb_url)
+      : !project.glb_url;
+
+  if (someTargetHasNoModel) {
+    return NextResponse.json(
+      {
+        error: `Cannot attach feedback — "${project.name}" has no uploaded model to review yet. Nothing was uploaded.`,
+      },
+      { status: 400 }
+    );
+  }
+
+  // Named colourways must each be one of the reviewable ones.
+  // Signing a slot for a colourway that isn't awaiting sign-off
+  // would put its file in a revision folder no DB row will ever
+  // claim.
+  const strayVariantId = rawVariantIds.find(
+    (v) =>
+      typeof v === 'string' && !reviewable.some((r) => r.id === v)
+  );
+  if (typeof strayVariantId === 'string') {
+    return NextResponse.json(
+      {
+        error:
+          'One of the models in this submission is no longer awaiting your review. Reload the page and try again — nothing was uploaded.',
       },
       { status: 400 }
     );

@@ -236,15 +236,33 @@ export default function ClientReviewPage({
   function addFiles(key: string, picked: FileList | File[]) {
     const arr = Array.from(picked).filter((f) => /^image\//.test(f.type));
     if (arr.length === 0) return;
+
+    // A target with no uploaded model is auto-held and renders no
+    // dropzone — but the window-level paste handler doesn't know
+    // that, so Ctrl+V still routed files here. Clearing `hold`
+    // below then made Submit available for something the server
+    // will always refuse, and by the time it did the files had
+    // already been PUT to R2. Refuse the attach instead, and say
+    // why, rather than accepting files into a dead end.
+    const target = targets.find((t) => t.key === key);
+    if (target && !target.glbUrl) {
+      setErr(
+        `${target.name} has no uploaded model yet, so there's nothing to mark up. Those images weren't attached.`
+      );
+      return;
+    }
+
     setDrafts((prev) => {
       const cur = prev[key] ?? EMPTY_DRAFT;
       return {
         ...prev,
         // Attaching feedback is an explicit act of deciding on
-        // this colourway, so it can't stay held.
+        // this colourway, so it can't stay held. Safe now that a
+        // target with no model can never reach this line.
         [key]: { ...cur, files: [...cur.files, ...arr], hold: false },
       };
     });
+    setErr(null);
     setConfirm(false);
   }
 

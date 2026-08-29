@@ -856,11 +856,26 @@ function ActiveJobsTable({
                 <a
                   className="crm-link"
                   href={crmPath(
-                    `/projects/${p.id}/feedback?revision=${rowRev}`
+                    // source picks WHICH feedback table to read.
+                    // On an EQA row the screenshots that matter
+                    // are the CLIENT's — they're the reason the
+                    // job came back. Without this the link
+                    // silently showed the admin's older IQA
+                    // round instead, and the client's markup was
+                    // unreachable from the artist's side.
+                    `/projects/${p.id}/feedback?revision=${rowRev}${
+                      rowStatus === 'eqa_rejected' || rowStatus === 'eqa_wip'
+                        ? '&source=client'
+                        : ''
+                    }`
                   )}
                   target="_blank"
                   rel="noreferrer"
-                  title={`View feedback for revision ${rowRev}`}
+                  title={
+                    rowStatus === 'eqa_rejected' || rowStatus === 'eqa_wip'
+                      ? `View the client's feedback for revision ${rowRev}`
+                      : `View QA feedback for revision ${rowRev}`
+                  }
                 >
                   {rowRev}
                 </a>

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '../../../components/Sidebar';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
+import { toWebpAll } from '../../../lib/image-to-webp';
 
 // ============================================================
 // Types
@@ -82,7 +83,7 @@ export default function EditClientJobForm({
 
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState<
-    'idle' | 'uploading-refs' | 'saving'
+    'idle' | 'optimizing' | 'uploading-refs' | 'saving'
   >('idle');
   const [err, setErr] = useState<string | null>(null);
 
@@ -121,6 +122,22 @@ export default function EditClientJobForm({
       // here — see the read-only slug field in the JSX below).
       let addUrls: string[] = [];
       if (newRefs.length > 0) {
+        // Re-encode to WebP before signing, exactly as the Create
+        // form does. Without this an image added on the edit
+        // screen was stored as the raw 4000px phone original,
+        // while the same image added at creation time was
+        // optimised — so the reference gallery for one job could
+        // hold a 12 KB WebP next to a 6 MB JPEG for no reason the
+        // user could see.
+        //
+        // `files` feeds BOTH the content_types below and the PUT
+        // bodies. Those two must describe the same bytes or R2
+        // rejects the upload on a signature mismatch, which is
+        // why the converted array is used throughout rather than
+        // the original newRefs.
+        setStage('optimizing');
+        const files = await toWebpAll(newRefs);
+
         setStage('uploading-refs');
         const signRes = await crmFetch('/api/references-sign', {
           method: 'POST',
@@ -128,8 +145,8 @@ export default function EditClientJobForm({
           body: JSON.stringify({
             client_slug: brand.slug,
             project_slug: project.slug,
-            count: newRefs.length,
-            content_types: newRefs.map(
+            count: files.length,
+            content_types: files.map(
               (f) => f.type || 'application/octet-stream'
             ),
           }),
@@ -141,7 +158,7 @@ export default function EditClientJobForm({
         }
 
         addUrls = await Promise.all(
-          newRefs.map(async (f, i) => {
+          files.map(async (f, i) => {
             const item = signData.signed[i];
             const r = await fetch(item.upload_url, {
               method: 'PUT',
@@ -202,7 +219,9 @@ export default function EditClientJobForm({
   }
 
   const stageLabel =
-    stage === 'uploading-refs'
+    stage === 'optimizing'
+      ? 'Optimising images…'
+      : stage === 'uploading-refs'
       ? 'Uploading references…'
       : stage === 'saving'
       ? 'Saving changes…'

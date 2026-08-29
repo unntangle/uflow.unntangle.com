@@ -201,15 +201,24 @@ async function main() {
   }
 
   console.log(
-    `\nconverted ${converted}, unchanged ${skipped}, failed ${failed}`
+    DRY_RUN
+      ? `\nwould convert ${converted}, would leave ${skipped} unchanged, failed ${failed}`
+      : `\nconverted ${converted}, unchanged ${skipped}, failed ${failed}`
   );
   if (bytesBefore > 0) {
     const pct = Math.round((1 - bytesAfter / bytesBefore) * 100);
     console.log(`total ${kb(bytesBefore)} -> ${kb(bytesAfter)} (${pct}% smaller)`);
   }
+  // Two very different messages. In a dry run NOTHING has been
+  // written — saying "originals were left in R2" implies new
+  // objects exist beside them, which is exactly the wrong thing
+  // to tell someone deciding whether it's safe to proceed.
   console.log(
-    'Original objects were left in R2. Delete them only once ' +
-      'you have verified the new URLs render.'
+    DRY_RUN
+      ? 'Dry run — nothing was uploaded and no rows were changed. ' +
+          'Re-run without --dry-run to apply.'
+      : 'Original objects were left in R2. Delete them only once ' +
+          'you have verified the new URLs render.'
   );
 }
 
