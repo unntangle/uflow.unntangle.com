@@ -200,10 +200,25 @@ export default function AdminDashboard({
   // client is selected (null), all projects pass through. We use
   // useMemo because every render would otherwise filter the array
   // again, even when neither projects nor the filter has changed.
+  //
+  // The search box narrows the same list, BEFORE bucketing, so
+  // every tab count reflects the search and switching tabs keeps
+  // the search applied. Matches job name, slug, artist and client,
+  // case-insensitive.
+  const [query, setQuery] = useState('');
   const visibleProjects = useMemo(() => {
-    if (!selectedClientId) return projects;
-    return projects.filter((p) => p.client_id === selectedClientId);
-  }, [projects, selectedClientId]);
+    const q = query.trim().toLowerCase();
+    return projects.filter((p) => {
+      if (selectedClientId && p.client_id !== selectedClientId) return false;
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.slug.toLowerCase().includes(q) ||
+        (p.assignee?.name ?? '').toLowerCase().includes(q) ||
+        (p.client?.name ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [projects, selectedClientId, query]);
 
   // ----- Buckets (by stage) -----
   // One job, one status, one bucket. Before the 2026-08-29
@@ -639,6 +654,19 @@ export default function AdminDashboard({
               </button>
             )}
           </header>
+
+          {/* Search. Filters every tab (and their counts) on job
+              name, slug, artist or client. Same box as List Jobs. */}
+          <div style={{ marginBottom: 16, maxWidth: 360 }}>
+            <input
+              className="crm-input"
+              type="search"
+              placeholder="Search by name, slug or artist…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search jobs"
+            />
+          </div>
 
           {/* ============================== Job Allocation mode ============================== */}
           {/* Standalone view: no tab bar, just the YTA table. */}
