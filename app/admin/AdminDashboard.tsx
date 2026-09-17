@@ -77,6 +77,10 @@ type Project = {
   model_type?: ModelType | null;
   parent_id?: string | null;
   parent_name?: string | null;
+  // Client (EQA) rejection history, summarised server-side by
+  // lib/eqa-rounds. Drives the EQA column beside Revision.
+  eqa_revision_count?: number;
+  latest_eqa_revision?: number | null;
 };
 
 type Client = { slug: string; name: string };
@@ -248,6 +252,7 @@ export default function AdminDashboard({
 
   // Tab key + lookup. Order matches the workflow flow.
   type Tab =
+    | 'all'
     | 'yta'
     | 'yts'
     | 'wip'
@@ -263,6 +268,7 @@ export default function AdminDashboard({
   // current tab key. Keeps old links pointing at the right place.
   function resolveTab(raw: string | null | undefined): Tab | null {
     if (!raw) return null;
+    if (raw === 'all') return 'all';
     if (raw === 'pending' || raw === 'iqa') return 'iqa';
     if (raw === 'rejected' || raw === 'iqa_rejected') return 'iqa_rejected';
     if (raw === 'eqa') return 'eqa';
@@ -295,6 +301,9 @@ export default function AdminDashboard({
     // can see what was subtracted from it.
     'hold',
     'history',
+    // Every job in one list, last so the stage tabs keep their
+    // workflow order and the unfiltered view sits at the end.
+    'all',
   ];
   const allowedTabs = isQaMode ? qaTabs : overviewTabs;
 
@@ -397,6 +406,7 @@ export default function AdminDashboard({
   // table render can be unified rather than duplicated nine times.
   const tabProjects: Project[] = (() => {
     switch (tab) {
+      case 'all':           return visibleProjects;
       case 'yta':           return yta;
       case 'yts':           return yts;
       case 'wip':           return wip;
@@ -439,6 +449,22 @@ export default function AdminDashboard({
     actionKind: 'review' | 'assign' | 'reassign' | 'none';
   };
   const tabMeta: Record<Tab, TabMeta> = {
+    all: {
+      label: 'All',
+      // Every job visible under the brand filter, whatever its
+      // status. Unlike Open Jobs, approved and held jobs are in.
+      count: visibleProjects.length,
+      emptyMsg: 'No jobs yet.',
+      // Mixed bucket, so both columns are on and the cell-level
+      // guards keep them empty where there's nothing to show
+      // (no GLB yet, no rejections yet).
+      showAsset: true,
+      showRevision: true,
+      // No queueStatuses: each row badges its own status.
+      // No action: assign/review live on the stage tabs, where
+      // the row is actually actionable.
+      actionKind: 'none',
+    },
     yta: {
       label: 'YTA',
       count: yta.length,
@@ -626,7 +652,6 @@ export default function AdminDashboard({
                     <SortableTh label="Project" sortKey="name" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <th>Type</th>
                     <th>References</th>
-                    <SortableTh label="Client" sortKey="client" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <SortableTh label="Created" sortKey="created" sort={ytaSort.sort} onSort={ytaSort.onSort} />
                     <th>Status</th>
                     <th>Action</th>
@@ -651,7 +676,6 @@ export default function AdminDashboard({
                       <td>
                         <ReferenceThumb project={p} />
                       </td>
-                      <td>{p.client.name}</td>
                       <DateCell value={p.created_at} />
                       <td>
                         <span
@@ -1038,6 +1062,7 @@ function ProjectTable({
     name: (p) => p.name,
     client: (p) => p.client.name,
     revision: (p) => p.revision_count,
+    eqa: (p) => p.eqa_revision_count ?? 0,
     created: (p) => new Date(p.created_at),
     updated: (p) => (p.updated_at ? new Date(p.updated_at) : null),
     status: (p) => statusRank(p.status),
@@ -1122,8 +1147,7 @@ function ProjectTable({
     1 + // Project
     1 + // Type
     1 + // References
-    1 + // Client
-    (meta.showRevision ? 1 : 0) +
+    (meta.showRevision ? 2 : 0) + // Revision + EQA
     1 + // Created
     1 + // Uploaded
     (meta.showAsset ? 1 : 0) +
@@ -1140,12 +1164,14 @@ function ProjectTable({
           <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
           <SortableTh label="Type" sortKey="type" sort={sort} onSort={onSort} />
           <th>References</th>
-          <SortableTh label="Client" sortKey="client" sort={sort} onSort={onSort} />
           {meta.showRevision && (
-            <SortableTh label="Revision" sortKey="revision" sort={sort} onSort={onSort} />
+            <SortableTh label="IQA" sortKey="revision" sort={sort} onSort={onSort} />
+          )}
+          {meta.showRevision && (
+            <SortableTh label="EQA" sortKey="eqa" sort={sort} onSort={onSort} />
           )}
           <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
-          <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
+          <SortableTh label="Latest Date" sortKey="updated" sort={sort} onSort={onSort} />
           {meta.showAsset && <th>Asset</th>}
           <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
           {hasAction && <th>Action</th>}
@@ -1240,7 +1266,6 @@ function ProjectTable({
             <td>
               <ReferenceThumb project={p} />
             </td>
-            <td>{p.client.name}</td>
             {meta.showRevision && (
               <td>
                 {rev >= 1 ? (
@@ -1281,6 +1306,11 @@ function ProjectTable({
                   // column still aligns.
                   rev
                 )}
+              </td>
+            )}
+            {meta.showRevision && (
+              <td>
+                <EqaRevisionCell project={p} />
               </td>
             )}
             <DateCell value={p.created_at} />
@@ -1433,6 +1463,44 @@ function ReferenceThumb({ project }: { project: Project }) {
           background: 'var(--surface-2, transparent)',
         }}
       />
+    </a>
+  );
+}
+
+// ============================================================
+// EQA revision cell
+//
+// Number of rounds the CLIENT has rejected this job, linked to
+// the client's own screenshots. Unlike the Revision column, this
+// link doesn't depend on the row's current status, so the EQA
+// images stay one click away after the job leaves EQA Rejected
+// (Start, re-upload, admin review, hold).
+//
+// Opens on the latest EQA round; the gallery's dropdown reaches
+// the earlier ones.
+// ============================================================
+function EqaRevisionCell({ project }: { project: Project }) {
+  const rounds = project.eqa_revision_count ?? 0;
+  if (rounds === 0) {
+    // Same convention as the Revision column: a plain 0 so the
+    // column aligns, nothing to click.
+    return <>{0}</>;
+  }
+  const params = new URLSearchParams({ source: 'client' });
+  if (typeof project.latest_eqa_revision === 'number') {
+    params.set('revision', String(project.latest_eqa_revision));
+  }
+  return (
+    <a
+      href={crmPath(`/projects/${project.id}/feedback?${params.toString()}`)}
+      target="_blank"
+      rel="noreferrer"
+      className="crm-link"
+      title={`View the client's feedback \u2014 ${rounds} EQA round${
+        rounds === 1 ? '' : 's'
+      }`}
+    >
+      {rounds}
     </a>
   );
 }

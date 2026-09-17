@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import JSZip from 'jszip';
 import Sidebar from '../../../components/Sidebar';
+import ThemedSelect from '../../../components/ThemedSelect';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 
 // ============================================================
@@ -156,11 +157,15 @@ export default function QaReviewPage({
   project,
   references,
   variants,
+  feedbackRounds = { iqa: [], eqa: [] },
   currentUser,
 }: {
   project: Project;
   references: Reference[];
   variants: Variant[];
+  // Distinct feedback round numbers on record, newest first.
+  // IQA = admin's rejections, EQA = the client's.
+  feedbackRounds?: { iqa: number[]; eqa: number[] };
   currentUser: { name: string; role: 'admin' };
 }) {
   const router = useRouter();
@@ -667,6 +672,35 @@ export default function QaReviewPage({
             </div>
           )}
 
+          {/* ================= Previous feedback (IQA + EQA) ================= */}
+          {/* Read-only links to every past rejection round, so the
+              reviewer can compare this upload against what was
+              asked for — including the client's markup, which is
+              what an EQA-rejected job came back to fix. Each link
+              opens the feedback gallery in a new tab so the review
+              in progress here isn't lost. */}
+          <section className="crm-card" style={{ marginTop: 24 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <h2 className="crm-qa-section-title" style={{ margin: 0 }}>
+                Previous feedback
+              </h2>
+              <FeedbackRoundLinks
+                projectId={project.id}
+                label="IQA"
+                hint="Admin rejections"
+                source="admin"
+                rounds={feedbackRounds.iqa}
+              />
+              <FeedbackRoundLinks
+                projectId={project.id}
+                label="EQA"
+                hint="Client rejections"
+                source="client"
+                rounds={feedbackRounds.eqa}
+              />
+            </div>
+          </section>
+
           {project.brief && (
             <section className="crm-card" style={{ marginTop: 24 }}>
               <div
@@ -727,7 +761,6 @@ export default function QaReviewPage({
                 const isActive = activeKey === t.key;
                 const isDragging = draggingKey === t.key;
                 const flashing = pasteFlashKey === t.key;
-                const willReject = d.files.length > 0;
                 const inputId = `qa-fb-input-${t.key}`;
 
                 return (
@@ -771,27 +804,11 @@ export default function QaReviewPage({
 
                       <span style={{ flex: 1 }} />
 
-                      {/* Outcome preview — the one thing a reviewer
-                          most wants to confirm before submitting. */}
-                      {!d.hold && (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: willReject
-                              ? 'var(--danger)'
-                              : 'var(--success, #16a34a)',
-                          }}
-                        >
-                          {willReject
-                            ? `Reject · ${d.files.length} image${
-                                d.files.length === 1 ? '' : 's'
-                              }`
-                            : 'Approve → client'}
-                        </span>
-                      )}
-
-                      {t.glbUrl && (
+                      {/* Per-block model link. Only useful when there are
+                          several colourways, where each block opens its
+                          own model. With a single block it duplicates the
+                          header's "View model" button exactly, so hide it. */}
+                      {multi && t.glbUrl && (
                         <a
                           className="crm-btn crm-btn-secondary"
                           href={crmPath(
@@ -1325,6 +1342,102 @@ export default function QaReviewPage({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// FeedbackRoundLinks
+//
+// One row of the "Previous feedback" card: a label, how many
+// rounds exist, a dropdown of rounds (newest first, preselected)
+// and an Open button for whichever round is picked. "All
+// revisions" is offered when there's more than one. Opens
+// /projects/[id]/feedback in a new tab, with `source` picking the
+// admin (IQA) or client (EQA) feedback table.
+// ============================================================
+function FeedbackRoundLinks({
+  projectId,
+  label,
+  hint,
+  source,
+  rounds,
+}: {
+  projectId: string;
+  label: string;
+  hint: string;
+  source: 'admin' | 'client';
+  rounds: number[];
+}) {
+  // Rounds arrive newest first, so index 0 is the latest. 'all'
+  // is the sentinel for every round on one page.
+  const [selected, setSelected] = useState<string>(
+    rounds.length > 0 ? String(rounds[0]) : ''
+  );
+
+  const href = (() => {
+    const params = new URLSearchParams({ source });
+    if (selected && selected !== 'all') params.set('revision', selected);
+    return crmPath(`/projects/${projectId}/feedback?${params.toString()}`);
+  })();
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        flexWrap: 'wrap',
+        fontSize: 13,
+      }}
+    >
+      <span
+        className={`crm-badge ${
+          source === 'client' ? 'crm-badge-client-review' : 'crm-badge-pending'
+        }`}
+        style={{ minWidth: 44, textAlign: 'center' }}
+      >
+        {label}
+      </span>
+      <span style={{ color: 'var(--text-dim)', minWidth: 170 }}>
+        {hint} · {rounds.length} round{rounds.length === 1 ? '' : 's'}
+      </span>
+
+      {rounds.length === 0 ? (
+        <span style={{ color: 'var(--text-faint)' }}>No feedback yet</span>
+      ) : (
+        <>
+          <ThemedSelect
+            value={selected}
+            onChange={setSelected}
+            ariaLabel={`${label} feedback round`}
+            options={[
+              ...rounds.map((rev, i) => ({
+                value: String(rev),
+                label: `Revision ${rev}${i === 0 ? ' (latest)' : ''}`,
+              })),
+              ...(rounds.length > 1
+                ? [{ value: 'all', label: `All revisions (${rounds.length})` }]
+                : []),
+            ]}
+          />
+          <a
+            className="crm-btn crm-btn-secondary"
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={
+              selected === 'all'
+                ? `Open every ${label} feedback round on one page`
+                : `Open ${label} feedback images for revision ${selected}`
+            }
+            style={{ padding: '5px 12px', fontSize: 12, textDecoration: 'none' }}
+          >
+            <ExternalLink size={12} strokeWidth={1.75} aria-hidden="true" />
+            Open images
+          </a>
+        </>
       )}
     </div>
   );

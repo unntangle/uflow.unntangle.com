@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import JSZip from 'jszip';
 import Sidebar from '../../../components/Sidebar';
+import ThemedSelect from '../../../components/ThemedSelect';
 import { crmFetch, crmPath } from '../../../lib/client-fetch';
 
 // ============================================================
@@ -142,11 +143,16 @@ export default function ClientReviewPage({
   project,
   references,
   variants,
+  eqaRounds = [],
   currentUser,
 }: {
   project: Project;
   references: Reference[];
   variants: Variant[];
+  // Distinct EQA round numbers the client has given feedback on,
+  // newest first. Client feedback only — internal IQA rounds are
+  // never passed to this page.
+  eqaRounds?: number[];
   currentUser: { name: string; role: 'client' };
 }) {
   const router = useRouter();
@@ -651,6 +657,20 @@ export default function ClientReviewPage({
             </div>
           )}
 
+          {/* ================= Previous feedback (EQA only) ================= */}
+          {/* The client's own earlier rejection screenshots, so they
+              can check this revision against what they asked for.
+              EQA only: the admin/artist IQA back-and-forth is
+              internal and never shown to the client. */}
+          <section className="crm-card" style={{ marginTop: 24 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <h2 className="crm-qa-section-title" style={{ margin: 0 }}>
+                Previous feedback
+              </h2>
+              <EqaRoundPicker projectId={project.id} rounds={eqaRounds} />
+            </div>
+          </section>
+
           {project.brief && (
             <section className="crm-card" style={{ marginTop: 24 }}>
               <div
@@ -711,7 +731,6 @@ export default function ClientReviewPage({
                 const isActive = activeKey === t.key;
                 const isDragging = draggingKey === t.key;
                 const flashing = pasteFlashKey === t.key;
-                const willReject = d.files.length > 0;
                 const inputId = `client-qa-fb-input-${t.key}`;
 
                 return (
@@ -757,27 +776,14 @@ export default function ClientReviewPage({
 
                       <span style={{ flex: 1 }} />
 
-                      {/* Outcome preview — the one thing a reviewer
-                          most wants to confirm before submitting. */}
-                      {!d.hold && (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: willReject
-                              ? 'var(--danger)'
-                              : 'var(--success, #16a34a)',
-                          }}
-                        >
-                          {willReject
-                            ? `Reject · ${d.files.length} image${
-                                d.files.length === 1 ? '' : 's'
-                              }`
-                            : 'Approve → publish'}
-                        </span>
-                      )}
-
-                      {t.glbUrl && (
+                      {/* Per-block model link. Only useful when there are
+                          several colourways, where each block opens its
+                          own model. With a single block it duplicates the
+                          header's "View model" button exactly, so hide it.
+                          (The outcome preview that used to sit here was
+                          removed; the confirmation dialog on Submit still
+                          spells out what happens to each model.) */}
+                      {multi && t.glbUrl && (
                         <a
                           className="crm-btn crm-btn-secondary"
                           href={crmPath(
@@ -1315,6 +1321,91 @@ export default function ClientReviewPage({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// EqaRoundPicker
+//
+// Same row as the admin review page's "Previous feedback" card,
+// EQA side only: badge, round count, a dropdown with the latest
+// round preselected (plus "All revisions" when there are several)
+// and an Open button. Always links with source=client, and the
+// feedback gallery also forces the client source for client users
+// on the server, so this can only ever show the client's own
+// screenshots.
+// ============================================================
+function EqaRoundPicker({
+  projectId,
+  rounds,
+}: {
+  projectId: string;
+  rounds: number[];
+}) {
+  const [selected, setSelected] = useState<string>(
+    rounds.length > 0 ? String(rounds[0]) : ''
+  );
+
+  const params = new URLSearchParams({ source: 'client' });
+  if (selected && selected !== 'all') params.set('revision', selected);
+  const href = crmPath(`/projects/${projectId}/feedback?${params.toString()}`);
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        flexWrap: 'wrap',
+        fontSize: 13,
+      }}
+    >
+      <span
+        className="crm-badge crm-badge-client-review"
+        style={{ minWidth: 44, textAlign: 'center' }}
+      >
+        EQA
+      </span>
+      <span style={{ color: 'var(--text-dim)', minWidth: 170 }}>
+        Your rejections · {rounds.length} round{rounds.length === 1 ? '' : 's'}
+      </span>
+
+      {rounds.length === 0 ? (
+        <span style={{ color: 'var(--text-faint)' }}>No feedback yet</span>
+      ) : (
+        <>
+          <ThemedSelect
+            value={selected}
+            onChange={setSelected}
+            ariaLabel="Feedback round"
+            options={[
+              ...rounds.map((rev, i) => ({
+                value: String(rev),
+                label: `Revision ${rev}${i === 0 ? ' (latest)' : ''}`,
+              })),
+              ...(rounds.length > 1
+                ? [{ value: 'all', label: `All revisions (${rounds.length})` }]
+                : []),
+            ]}
+          />
+          <a
+            className="crm-btn crm-btn-secondary"
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={
+              selected === 'all'
+                ? 'Open all your feedback rounds on one page'
+                : `Open your feedback images for revision ${selected}`
+            }
+            style={{ padding: '5px 12px', fontSize: 12, textDecoration: 'none' }}
+          >
+            <ExternalLink size={12} strokeWidth={1.75} aria-hidden="true" />
+            Open images
+          </a>
+        </>
       )}
     </div>
   );

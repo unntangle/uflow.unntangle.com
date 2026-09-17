@@ -1,6 +1,7 @@
 import { requireUser } from '../lib/auth';
 import { supabase, ProjectStatus } from '../lib/supabase';
 import ArtistDashboard from './ArtistDashboard';
+import { loadEqaRounds, eqaRoundsFor } from '../lib/eqa-rounds';
 
 // ============================================================
 // 3D Artist dashboard
@@ -74,6 +75,12 @@ export default async function ArtistPage() {
     (projects || []).map((p) => [p.id as string, p.name as string])
   );
 
+  // EQA round summaries for the EQA column, scoped to this
+  // artist's own jobs. Never throws.
+  const eqaRounds = await loadEqaRounds(
+    (projects || []).map((p) => p.id as string)
+  );
+
   // Normalise the joined `client` field (supabase typing returns it as
   // either an object or a single-element array depending on version).
   const normalised = (projects || []).map((p) => {
@@ -95,6 +102,7 @@ export default async function ArtistPage() {
         : null,
       thumb_url: firstRef?.image_url ?? null,
       references: undefined,
+      ...eqaRoundsFor(eqaRounds, row.id),
     };
   });
 

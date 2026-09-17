@@ -106,10 +106,14 @@ export default async function AdminDownloadJobsPage() {
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
     const a = Array.isArray(r.assignee) ? r.assignee[0] : r.assignee;
     // Distinct rejection rounds per QA stage.
-    const iqaCount = new Set((r.iqa ?? []).map((x) => x.revision)).size;
-    const eqaCount = new Set(
-      (r.eqa ?? []).map((x) => x.revision_number)
-    ).size;
+    const iqaRounds = new Set((r.iqa ?? []).map((x) => x.revision));
+    const eqaRounds = new Set((r.eqa ?? []).map((x) => x.revision_number));
+    const iqaCount = iqaRounds.size;
+    const eqaCount = eqaRounds.size;
+    // Newest round per side, so the view icon opens the gallery on
+    // a revision that actually has images.
+    const latestOf = (s: Set<number>) =>
+      s.size ? Math.max(...Array.from(s)) : null;
     return {
       ...r,
       client: c ?? { slug: '', name: '' },
@@ -120,6 +124,11 @@ export default async function AdminDownloadJobsPage() {
       spp_url: r.spp_url ?? null,
       iqa_count: iqaCount,
       eqa_count: eqaCount,
+      iqa_latest: latestOf(iqaRounds),
+      eqa_latest: latestOf(eqaRounds),
+      // The raw embeds are only needed for the counts above.
+      iqa: undefined,
+      eqa: undefined,
     };
   });
 

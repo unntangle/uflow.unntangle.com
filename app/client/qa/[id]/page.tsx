@@ -83,6 +83,31 @@ export default async function Page({
     .eq('project_id', id)
     .order('created_at', { ascending: true });
 
+  // ----- Past EQA rounds (the client's OWN feedback only) -----
+  // Read ONLY from uflow_client_feedback_images, which holds the
+  // screenshots clients upload when they reject. Admin's internal
+  // IQA feedback (uflow_feedback_images) is deliberately never
+  // queried here, so it can't reach the client's page. Brand
+  // scoping is already enforced above (project.client_id check).
+  //
+  // Only the distinct round numbers go down; the images are viewed
+  // in the feedback gallery, which also forces source=client for
+  // client users server-side. Non-fatal: a failure just shows
+  // "No feedback yet".
+  const { data: eqaRows, error: eqaErr } = await supabase()
+    .from('uflow_client_feedback_images')
+    .select('revision_number')
+    .eq('project_id', id);
+  if (eqaErr) console.error('[client.qa.page] EQA rounds', eqaErr);
+
+  const eqaRounds = Array.from(
+    new Set(
+      (eqaRows ?? [])
+        .map((r) => r.revision_number)
+        .filter((n): n is number => typeof n === 'number')
+    )
+  ).sort((x, y) => y - x);
+
   // Normalise joined relations the same way the admin page does.
   const c = Array.isArray(project.client)
     ? (project.client as { slug: string; name: string }[])[0]
@@ -107,6 +132,7 @@ export default async function Page({
       }}
       references={references ?? []}
       variants={variants}
+      eqaRounds={eqaRounds}
       currentUser={{ name: user.name, role: user.role as 'client' }}
     />
   );

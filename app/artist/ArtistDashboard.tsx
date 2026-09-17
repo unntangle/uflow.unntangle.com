@@ -52,6 +52,10 @@ type Project = {
   model_type?: ModelType | null;
   parent_id?: string | null;
   parent_name?: string | null;
+  // Client (EQA) rejection history, summarised server-side by
+  // lib/eqa-rounds. Drives the EQA column beside Revision Round.
+  eqa_revision_count?: number;
+  latest_eqa_revision?: number | null;
 };
 
 // ============================================================
@@ -792,7 +796,8 @@ function ActiveJobsTable({
           <th>Type</th>
           <th>Brief</th>
           <th>Reference</th>
-          <th>Revision Round</th>
+          <th>IQA</th>
+          <th>EQA</th>
           <th>Status</th>
           <th>Updated</th>
           <th style={{ textAlign: 'right' }}>Action</th>
@@ -882,6 +887,9 @@ function ActiveJobsTable({
               )}
             </td>
             <td>
+              <EqaRoundCell project={p} />
+            </td>
+            <td>
               <StatusBadge
                 status={rowStatus}
                 revisionCount={rowRev}
@@ -948,6 +956,41 @@ function ActiveJobsTable({
         })}
       </tbody>
     </table>
+  );
+}
+
+// ============================================================
+// EQA round cell
+//
+// Number of rounds the CLIENT has rejected this job, linked to
+// the client's own screenshots at the latest EQA round. Unlike
+// Revision Round, the link doesn't depend on the row's current
+// status, so the client's markup stays reachable after Start or
+// a re-upload.
+// ============================================================
+function EqaRoundCell({ project }: { project: Project }) {
+  const rounds = project.eqa_revision_count ?? 0;
+  if (rounds === 0) {
+    return (
+      <span style={{ color: 'var(--text-faint)', fontSize: 13 }}>—</span>
+    );
+  }
+  const params = new URLSearchParams({ source: 'client' });
+  if (typeof project.latest_eqa_revision === 'number') {
+    params.set('revision', String(project.latest_eqa_revision));
+  }
+  return (
+    <a
+      className="crm-link"
+      href={crmPath(`/projects/${project.id}/feedback?${params.toString()}`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`View the client's feedback \u2014 ${rounds} EQA round${
+        rounds === 1 ? '' : 's'
+      }`}
+    >
+      {rounds}
+    </a>
   );
 }
 
@@ -1035,7 +1078,8 @@ function CompletedJobsTable({
           <th>Type</th>
           <th>Brief</th>
           <th>Reference</th>
-          <th>Revisions</th>
+          <th>IQA</th>
+          <th>EQA</th>
           <th>Approved</th>
           <th>Status</th>
           <th style={{ textAlign: 'right' }}>Asset</th>
@@ -1081,6 +1125,11 @@ function CompletedJobsTable({
                   because the job is closed and a feedback gallery
                   click would dead-end on "no further revisions". */}
               {p.revision_count}
+            </td>
+            <td style={{ color: 'var(--text-dim)' }}>
+              {/* Plain number, same as Revisions: the job is
+                  closed, so this is history, not a to-do. */}
+              {p.eqa_revision_count ?? 0}
             </td>
             <td style={{ color: 'var(--text-dim)' }}>
               {new Date(p.updated_at).toLocaleDateString()}

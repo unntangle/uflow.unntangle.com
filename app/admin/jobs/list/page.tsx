@@ -1,6 +1,7 @@
 import { requireUser } from '../../../lib/auth';
 import { supabase, ProjectStatus } from '../../../lib/supabase';
 import ListJobsPage from './ListJobsPage';
+import { loadEqaRounds, eqaRoundsFor } from '../../../lib/eqa-rounds';
 
 // ============================================================
 // Admin -> List Jobs
@@ -58,6 +59,10 @@ type ProjectRow = {
 export default async function AdminListJobsPage() {
   const user = await requireUser('admin');
 
+  // EQA round summaries for the EQA column. Runs in parallel with
+  // the main query and never throws.
+  const eqaRoundsPromise = loadEqaRounds();
+
   const { data: rawProjects, error } = await supabase()
     .from('uflow_projects')
     .select(
@@ -81,6 +86,8 @@ export default async function AdminListJobsPage() {
     (rawProjects || []).map((p) => [p.id as string, p.name as string])
   );
 
+  const eqaRounds = await eqaRoundsPromise;
+
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
@@ -97,6 +104,7 @@ export default async function AdminListJobsPage() {
       model_type: r.model_type ?? 'parent',
       parent_id: r.parent_id ?? null,
       parent_name: r.parent_id ? parentNames.get(r.parent_id) ?? null : null,
+      ...eqaRoundsFor(eqaRounds, r.id),
     };
   });
 

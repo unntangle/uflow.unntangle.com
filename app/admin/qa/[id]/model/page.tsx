@@ -35,9 +35,79 @@ import ModelViewerPage from './ModelViewerPage';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = {
-  title: 'Model viewer',
-};
+// Last path segment of an asset URL, query/hash stripped and
+// percent-decoded: ".../uploads/rev-3/meeting-table_4.glb?x=1"
+// -> "meeting-table_4.glb". null when there's nothing usable.
+function fileNameOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const last = new URL(url).pathname.split('/').filter(Boolean).pop();
+    return last ? decodeURIComponent(last) : null;
+  } catch {
+    const last = url.split(/[?#]/)[0].split('/').filter(Boolean).pop();
+    return last || null;
+  }
+}
+
+// ----- Tab title -----
+// Names the tab after the GLB actually on screen, e.g.
+// "meeting-table_4.glb | uFLOW", so several open viewers can be
+// told apart. Resolves the file the SAME way the page body does:
+// ?variant= if given, else the primary colourway, else the
+// product's own working / approved GLB. Falls back to the job
+// name when there's no model yet.
+//
+// Scoping is re-checked because metadata resolves separately from
+// the page: a file or job name must not appear in the tab of
+// someone who can't see the job. Out-of-scope callers get the
+// generic title and the page itself 404s.
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ variant?: string }>;
+}) {
+  const generic = { title: 'Model viewer' };
+
+  const user = await requireUser();
+  const { id } = await params;
+  const sp = await searchParams;
+
+  const { data: project } = await supabase()
+    .from('uflow_projects')
+    .select('name, glb_url, approved_glb_url, assigned_to, client_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (!project) return generic;
+
+  if (user.role === '3d_artist' && project.assigned_to !== user.userId) {
+    return generic;
+  }
+  if (
+    user.role === 'client' &&
+    (!user.clientId || project.client_id !== user.clientId)
+  ) {
+    return generic;
+  }
+
+  const { data: rawVariants } = await supabase()
+    .from('uflow_project_variants')
+    .select('id, glb_url, approved_glb_url, is_primary')
+    .eq('project_id', id);
+  const variants = rawVariants ?? [];
+
+  const target = sp.variant
+    ? variants.find((v) => v.id === sp.variant)
+    : variants.find((v) => v.is_primary);
+
+  const glbUrl = target
+    ? (target.glb_url as string | null) ||
+      (target.approved_glb_url as string | null)
+    : project.glb_url || project.approved_glb_url;
+
+  return { title: fileNameOf(glbUrl) ?? project.name };
+}
 
 export default async function Page({
   params,

@@ -306,7 +306,7 @@ export default function ClientDashboard({
   const allocated = projects.filter((p) => !isApproved(p));
 
   // ----- Tab plumbing -----
-  type Tab = 'not_approved' | 'review' | 'client_rejected' | 'history';
+  type Tab = 'all' | 'not_approved' | 'review' | 'client_rejected' | 'history';
 
   // Both Overview and Quality Audit open on EQA — the actionable
   // queue. Lands the client on what they can immediately act on
@@ -315,6 +315,7 @@ export default function ClientDashboard({
 
   function resolveTab(raw: string | null | undefined): Tab | null {
     if (!raw) return null;
+    if (raw === 'all') return 'all';
     if (raw === 'not_approved' || raw === 'open' || raw === 'wip') {
       return 'not_approved';
     }
@@ -413,7 +414,10 @@ export default function ClientDashboard({
           {/* ============================== Tab bar (Overview + QA modes) ============================== */}
           {!isAllocatedMode && !isApprovedMode && (
             <div className="crm-tabs" role="tablist" aria-label="My projects">
-              {/* Tab order: EQA → EQA Rejected → Open Jobs → Approved.
+              {/* Tab order: EQA → EQA Rejected → Open Jobs → Approved → All.
+                  All is the unfiltered list the other four
+                  partition, so it sits at the end. The page still
+                  OPENS on EQA (defaultTab).
                   Client-actionable queues (EQA, EQA Rejected) sit
                   first so the client lands on what needs their
                   attention; Open Jobs (passive rollup) and
@@ -454,7 +458,35 @@ export default function ClientDashboard({
                 Approved
                 <span className="crm-tab-count">{history.length}</span>
               </button>
+              <button
+                role="tab"
+                aria-selected={tab === 'all'}
+                className={`crm-tab ${tab === 'all' ? 'is-active' : ''}`}
+                onClick={() => setTab('all')}
+              >
+                All
+                <span className="crm-tab-count">{projects.length}</span>
+              </button>
             </div>
+          )}
+
+          {/* ============================== All ============================== */}
+          {/* Every job for the brand. Each row shows its own
+              client-facing status (no forceStatusLabel), the
+              client's revision rounds, and Edit/Delete on rows
+              still in draft. Review stays on the EQA tab, where
+              every row is actually reviewable. */}
+          {!isAllocatedMode && !isApprovedMode && tab === 'all' && (
+            projects.length === 0 ? (
+              <EmptyMini message="No jobs yet. Create a job to get started." />
+            ) : (
+              <ProjectTable
+                projects={projects}
+                showAsset={true}
+                showRevision={true}
+                onDelete={setPending}
+              />
+            )
           )}
 
           {/* ============================== Open Jobs ============================== */}

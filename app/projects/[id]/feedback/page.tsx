@@ -34,9 +34,69 @@ import FeedbackGallery from './FeedbackGallery';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = {
-  title: 'Feedback images',
-};
+// ----- Tab title -----
+// Names the tab after the side the gallery is showing, so several
+// open feedback tabs can be told apart:
+//   "IQA Feedback · Rev 3 · Meeting Table - 8Seater | uFLOW"
+//   "EQA Feedback · Meeting Table - 8Seater | uFLOW"
+//
+// The source is resolved with the SAME rules the page uses below
+// (client role -> always client; otherwise ?source= wins, else the
+// row's status decides), so the title can't disagree with the
+// gallery underneath it.
+//
+// Scoping is re-checked here too: metadata is resolved separately
+// from the page body, and a job's name must not leak into the tab
+// of someone who isn't allowed to see the job. Anyone out of scope
+// gets the generic title, and the page itself then 404s.
+// requireUser's login redirect propagates as usual.
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: SearchParams;
+}) {
+  const generic = { title: 'Feedback images' };
+
+  const user = await requireUser();
+  const { id } = await params;
+  const sp = await searchParams;
+
+  const { data: project } = await supabase()
+    .from('uflow_projects')
+    .select('name, status, assigned_to, client_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (!project) return generic;
+
+  if (user.role === '3d_artist' && project.assigned_to !== user.userId) {
+    return generic;
+  }
+  if (
+    user.role === 'client' &&
+    (!user.clientId || project.client_id !== user.clientId)
+  ) {
+    return generic;
+  }
+
+  const requested =
+    sp.source === 'client' ? 'client' : sp.source === 'admin' ? 'admin' : null;
+  const fallback =
+    project.status === 'eqa_rejected' || project.status === 'eqa_wip'
+      ? 'client'
+      : 'admin';
+  const source = user.role === 'client' ? 'client' : requested ?? fallback;
+
+  const rev = sp.revision ? parseInt(sp.revision, 10) : NaN;
+  const revPart = Number.isFinite(rev) && rev > 0 ? ` · Rev ${rev}` : '';
+
+  return {
+    title: `${source === 'client' ? 'EQA' : 'IQA'} Feedback${revPart} · ${
+      project.name
+    }`,
+  };
+}
 
 type SearchParams = Promise<{
   revision?: string;

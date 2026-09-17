@@ -404,6 +404,103 @@ body.crm-root {
   color: var(--danger);
 }
 
+/* ----- themed select (app/components/ThemedSelect.tsx) -----
+   Replaces native <select> where the OPEN menu needs to match the
+   theme. Same visual language as the client switcher above:
+   light surface, strong border, soft shadow, grey hover, bold +
+   check on the selected option. */
+.crm-root .crm-select {
+  position: relative;
+  display: inline-block;
+}
+.crm-root .crm-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px 6px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.crm-root .crm-select-trigger:hover {
+  border-color: var(--text-dim);
+}
+.crm-root .crm-select-trigger:focus-visible,
+.crm-root .crm-select-trigger.is-open {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.crm-root .crm-select-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.crm-root .crm-select-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crm-root .crm-select-chevron {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+.crm-root .crm-select-trigger.is-open .crm-select-chevron {
+  transform: rotate(180deg);
+}
+.crm-root .crm-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.08);
+  padding: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.crm-root .crm-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.crm-root .crm-select-option.is-active {
+  background: var(--surface-2);
+}
+.crm-root .crm-select-option.is-selected {
+  font-weight: 600;
+}
+.crm-root .crm-select-option svg {
+  flex-shrink: 0;
+  color: var(--text);
+}
+
 /* ----- top nav (legacy, may still be used on some pages) ----- */
 .crm-root .crm-nav {
   position: sticky;
@@ -673,6 +770,44 @@ body.crm-root {
 }
 .crm-root .crm-table tr:hover td {
   background: rgba(0, 0, 0, 0.02);
+}
+
+/* ----- horizontally scrolling table -----
+   Opt-in variant for wide tables (e.g. List Jobs). Wrap the table
+   in .crm-table-scroll and add .crm-table-wide to the table:
+
+     <div class="crm-table-scroll">
+       <table class="crm-table crm-table-wide">...</table>
+     </div>
+
+   Instead of squeezing every column into the viewport (the base
+   table uses table-layout: fixed and wraps text), each column
+   takes its natural full width on one line, and the wrapper
+   scrolls sideways when the total is wider than the page. The
+   table still fills the wrapper when it's narrower. */
+.crm-root .crm-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.crm-root .crm-table.crm-table-wide {
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+  /* The wrapper carries the border + radius; overflow: hidden on
+     the table would otherwise clip it inside the scroll area. */
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+.crm-root .crm-table.crm-table-wide th,
+.crm-root .crm-table.crm-table-wide td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 /* ----- status badges ----- */

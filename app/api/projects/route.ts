@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiUser } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
 import { isOurPublicUrl } from '../../lib/r2';
+import { loadEqaRounds, eqaRoundsFor } from '../../lib/eqa-rounds';
 import {
   isJobComplexity,
   isJobCategory,
@@ -69,7 +70,21 @@ export async function GET() {
     console.error('[projects.list]', error);
     return NextResponse.json({ error: 'DB error' }, { status: 500 });
   }
-  return NextResponse.json({ projects: data });
+
+  // EQA round summaries, kept in sync with the SSR pages so a live
+  // refresh doesn't wipe the EQA column. Admins get every job, so
+  // skip the id filter; other roles are scoped to what they can
+  // see. loadEqaRounds never throws.
+  const rows = data ?? [];
+  const eqaRounds = await loadEqaRounds(
+    auth.role === 'admin' ? undefined : rows.map((p) => p.id as string)
+  );
+  const projects = rows.map((p) => ({
+    ...p,
+    ...eqaRoundsFor(eqaRounds, p.id as string),
+  }));
+
+  return NextResponse.json({ projects });
 }
 
 export async function POST(req: NextRequest) {

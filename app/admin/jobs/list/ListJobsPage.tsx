@@ -56,6 +56,10 @@ type Project = {
   model_type?: ModelType | null;
   parent_id?: string | null;
   parent_name?: string | null;
+  // Client (EQA) rejection history, summarised server-side by
+  // lib/eqa-rounds. Drives the EQA column.
+  eqa_revision_count?: number;
+  latest_eqa_revision?: number | null;
 };
 
 type ProjectReference = {
@@ -222,6 +226,9 @@ export default function ListJobsPage({
     // Complexity sorts by effort band (easy -> complex), not
     // alphabetically. Unclassified rows sink to the bottom.
     complexity: (p) => complexityRank(p.complexity),
+    // Same values the Overview's IQA / EQA columns sort on.
+    iqa: (p) => p.revision_count,
+    eqa: (p) => p.eqa_revision_count ?? 0,
   });
 
   // ------------------------------------------------------------
@@ -360,7 +367,11 @@ export default function ListJobsPage({
               }
             />
           ) : (
-            <table className="crm-table">
+            // Horizontal scroll: every column keeps its full width
+            // on one line, and the wrapper scrolls sideways when the
+            // table is wider than the page. See .crm-table-wide.
+            <div className="crm-table-scroll">
+            <table className="crm-table crm-table-wide">
               <thead>
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
@@ -385,9 +396,11 @@ export default function ListJobsPage({
                     sort={sort}
                     onSort={onSort}
                   />
+                  <SortableTh label="IQA" sortKey="iqa" sort={sort} onSort={onSort} />
+                  <SortableTh label="EQA" sortKey="eqa" sort={sort} onSort={onSort} />
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
                   <SortableTh label="Created" sortKey="created" sort={sort} onSort={onSort} />
-                  <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
+                  <SortableTh label="Latest Date" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
@@ -398,7 +411,7 @@ export default function ListJobsPage({
                     return (
                       <tr key={`group-${row.label}`}>
                         <td
-                          colSpan={10}
+                          colSpan={12}
                           style={{
                             background: 'var(--surface-2, rgba(0,0,0,0.03))',
                             color: 'var(--text-dim)',
@@ -498,6 +511,12 @@ export default function ListJobsPage({
                       {complexityLabel(p.complexity)}
                     </td>
                     <td>
+                      <IqaRevisionCell project={p} />
+                    </td>
+                    <td>
+                      <EqaRevisionCell project={p} />
+                    </td>
+                    <td>
                       {p.assignee?.name || (
                         <em style={{ color: 'var(--text-faint)' }}>
                           unassigned
@@ -567,6 +586,7 @@ export default function ListJobsPage({
                 })}
               </tbody>
             </table>
+            </div>
           )}
 
           {/* Reference lightbox. Reuses the same .crm-lightbox
@@ -800,6 +820,65 @@ function ReferenceThumbs({
         <img src={refs[0].image_url} alt="" loading="lazy" />
       </button>
     </div>
+  );
+}
+
+// ============================================================
+// IQA / EQA revision cells
+//
+// Same values and links as the Overview's IQA and EQA columns, so
+// a job reads identically on both pages.
+//
+//   IQA - revision_count, linked to the feedback gallery for that
+//         round. On eqa_rejected / eqa_wip rows the Overview opens
+//         the client's screenshots, so this does too.
+//   EQA - distinct client rejection rounds, linked to the client's
+//         screenshots at the latest EQA round.
+//
+// Zero renders as a plain 0 (nothing to click), matching the
+// Overview.
+// ============================================================
+function IqaRevisionCell({ project }: { project: Project }) {
+  const rev = project.revision_count ?? 0;
+  if (rev < 1) return <>{0}</>;
+  const toClient =
+    project.status === 'eqa_rejected' || project.status === 'eqa_wip';
+  return (
+    <a
+      className="crm-link"
+      href={crmPath(
+        `/projects/${project.id}/feedback?revision=${rev}${
+          toClient ? '&source=client' : ''
+        }`
+      )}
+      target="_blank"
+      rel="noreferrer"
+      title="View feedback for this revision"
+    >
+      {rev}
+    </a>
+  );
+}
+
+function EqaRevisionCell({ project }: { project: Project }) {
+  const rounds = project.eqa_revision_count ?? 0;
+  if (rounds === 0) return <>{0}</>;
+  const params = new URLSearchParams({ source: 'client' });
+  if (typeof project.latest_eqa_revision === 'number') {
+    params.set('revision', String(project.latest_eqa_revision));
+  }
+  return (
+    <a
+      className="crm-link"
+      href={crmPath(`/projects/${project.id}/feedback?${params.toString()}`)}
+      target="_blank"
+      rel="noreferrer"
+      title={`View the client's feedback \u2014 ${rounds} EQA round${
+        rounds === 1 ? '' : 's'
+      }`}
+    >
+      {rounds}
+    </a>
   );
 }
 

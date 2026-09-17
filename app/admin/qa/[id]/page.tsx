@@ -78,6 +78,39 @@ export default async function Page({
     .eq('project_id', id)
     .order('created_at', { ascending: true });
 
+  // ----- Past feedback rounds -----
+  // Every round that has screenshots on record, from both sides:
+  //   IQA - admin's own rejections (uflow_feedback_images.revision)
+  //   EQA - the client's rejections
+  //         (uflow_client_feedback_images.revision_number)
+  // Only the distinct round numbers are passed down; the images
+  // themselves are viewed in the feedback gallery, which the
+  // review page links to. Both reads are non-fatal: a failure
+  // just hides that side's links rather than blocking the review.
+  const [{ data: iqaRows, error: iqaErr }, { data: eqaRows, error: eqaErr }] =
+    await Promise.all([
+      supabase()
+        .from('uflow_feedback_images')
+        .select('revision')
+        .eq('project_id', id),
+      supabase()
+        .from('uflow_client_feedback_images')
+        .select('revision_number')
+        .eq('project_id', id),
+    ]);
+  if (iqaErr) console.error('[qa.page] IQA rounds', iqaErr);
+  if (eqaErr) console.error('[qa.page] EQA rounds', eqaErr);
+
+  const distinctDesc = (nums: unknown[]): number[] =>
+    Array.from(
+      new Set(nums.filter((n): n is number => typeof n === 'number'))
+    ).sort((x, y) => y - x);
+
+  const feedbackRounds = {
+    iqa: distinctDesc((iqaRows ?? []).map((r) => r.revision)),
+    eqa: distinctDesc((eqaRows ?? []).map((r) => r.revision_number)),
+  };
+
   // Normalise embedded relations (Supabase types these as arrays
   // even when the FK is single-valued, depending on how the join
   // is generated). Same pattern as the admin overview page.
@@ -102,6 +135,7 @@ export default async function Page({
       }}
       references={references ?? []}
       variants={variants}
+      feedbackRounds={feedbackRounds}
       currentUser={{ name: user.name, role: user.role as 'admin' }}
     />
   );

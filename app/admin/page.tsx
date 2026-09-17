@@ -1,6 +1,7 @@
 import { requireUser } from '../lib/auth';
 import { supabase, ProjectStatus } from '../lib/supabase';
 import AdminDashboard from './AdminDashboard';
+import { loadEqaRounds, eqaRoundsFor } from '../lib/eqa-rounds';
 
 // ============================================================
 // Admin dashboard
@@ -61,6 +62,10 @@ type ProjectRow = {
 export default async function AdminPage() {
   const user = await requireUser('admin');
 
+  // EQA round summaries for the EQA column. Started before the
+  // main queries so it runs in parallel with them; never throws.
+  const eqaRoundsPromise = loadEqaRounds();
+
   const [{ data: rawProjects, error: projectsError }, { data: artists, error: artistsError }] =
     await Promise.all([
       supabase()
@@ -97,6 +102,8 @@ export default async function AdminPage() {
     (rawProjects || []).map((p) => [p.id as string, p.name as string])
   );
 
+  const eqaRounds = await eqaRoundsPromise;
+
   const normalised = (rawProjects || []).map((p) => {
     const r = p as ProjectRow;
     const c = Array.isArray(r.client) ? r.client[0] : r.client;
@@ -127,6 +134,7 @@ export default async function AdminPage() {
       model_type: r.model_type ?? 'parent',
       parent_id: r.parent_id ?? null,
       parent_name: r.parent_id ? parentNames.get(r.parent_id) ?? null : null,
+      ...eqaRoundsFor(eqaRounds, r.id),
     };
   });
 

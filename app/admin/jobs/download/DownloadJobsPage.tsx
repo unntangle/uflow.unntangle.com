@@ -44,6 +44,10 @@ type Project = {
   // Distinct rejection rounds, computed server-side.
   iqa_count: number; // admin / internal QA rejections
   eqa_count: number; // client / external QA rejections
+  // Newest round number per side (null when there are none).
+  // Drives which revision the view icon opens.
+  iqa_latest?: number | null;
+  eqa_latest?: number | null;
 };
 
 // ============================================================
@@ -105,6 +109,21 @@ export default function DownloadJobsPage({
   function viewReferences(p: Project) {
     window.open(
       crmPath(`/admin/qa/${p.id}/references`),
+      '_blank',
+      'noopener,noreferrer'
+    );
+  }
+  // Open the feedback gallery for one side, on its latest round.
+  // The gallery's own dropdown reaches the earlier rounds.
+  function viewFeedback(
+    p: Project,
+    source: 'admin' | 'client',
+    latest: number | null | undefined
+  ) {
+    const params = new URLSearchParams({ source });
+    if (typeof latest === 'number') params.set('revision', String(latest));
+    window.open(
+      crmPath(`/projects/${p.id}/feedback?${params.toString()}`),
       '_blank',
       'noopener,noreferrer'
     );
@@ -286,7 +305,7 @@ export default function DownloadJobsPage({
                 <tr>
                   <SortableTh label="Project" sortKey="name" sort={sort} onSort={onSort} />
                   <SortableTh label="Artist" sortKey="artist" sort={sort} onSort={onSort} />
-                  <SortableTh label="Uploaded" sortKey="updated" sort={sort} onSort={onSort} />
+                  <SortableTh label="Latest Date" sortKey="updated" sort={sort} onSort={onSort} />
                   <SortableTh label="Status" sortKey="status" sort={sort} onSort={onSort} />
                   <th style={thCenter}>IQA</th>
                   <th style={thCenter}>EQA</th>
@@ -340,24 +359,20 @@ export default function DownloadJobsPage({
                       </td>
 
                       {/* ---- IQA rejection rounds ---- */}
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <span
-                          style={revPill}
-                          title="IQA — internal / admin rejection rounds"
-                        >
-                          {p.iqa_count}
-                        </span>
-                      </td>
+                      <RoundsCell
+                        count={p.iqa_count}
+                        title="IQA — internal / admin rejection rounds"
+                        viewTitle="View IQA feedback images"
+                        onView={() => viewFeedback(p, 'admin', p.iqa_latest)}
+                      />
 
                       {/* ---- EQA rejection rounds ---- */}
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <span
-                          style={revPill}
-                          title="EQA — external / client rejection rounds"
-                        >
-                          {p.eqa_count}
-                        </span>
-                      </td>
+                      <RoundsCell
+                        count={p.eqa_count}
+                        title="EQA — external / client rejection rounds"
+                        viewTitle="View EQA feedback images"
+                        onView={() => viewFeedback(p, 'client', p.eqa_latest)}
+                      />
 
                       {/* ---- GLB (3D model) ---- */}
                       <AssetCell
@@ -429,6 +444,61 @@ export default function DownloadJobsPage({
         </div>
       </main>
     </div>
+  );
+}
+
+// ============================================================
+// RoundsCell — a view (eye) icon followed by the IQA / EQA count
+// pill. Icon first, same order as the GLB and Reference columns
+// (view, then the count / download), so the row reads the same
+// way left to right.
+//
+// The icon only works when there's at least one round, so a 0
+// never opens an empty gallery. On a 0 row an invisible spacer
+// of the same size takes its place, which keeps every count pill
+// in the same horizontal position down the column.
+// ============================================================
+function RoundsCell({
+  count,
+  title,
+  viewTitle,
+  onView,
+}: {
+  count: number;
+  title: string;
+  viewTitle: string;
+  onView: () => void;
+}) {
+  return (
+    <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+      <span style={iconRow}>
+        {count > 0 ? (
+          <button
+            type="button"
+            className="crm-btn crm-btn-ghost crm-btn-icon"
+            style={iconBtn}
+            onClick={onView}
+            title={viewTitle}
+            aria-label={viewTitle}
+          >
+            <Eye size={15} strokeWidth={1.75} />
+          </button>
+        ) : (
+          // Same box as the button above, hidden from view and
+          // from assistive tech; it only holds the space.
+          <span
+            aria-hidden="true"
+            className="crm-btn crm-btn-ghost crm-btn-icon"
+            style={{ ...iconBtn, visibility: 'hidden', pointerEvents: 'none' }}
+          >
+            <Eye size={15} strokeWidth={1.75} />
+          </span>
+        )}
+        <span style={revPill} title={title}>
+          {count}
+        </span>
+      </span>
+    </td>
   );
 }
 
